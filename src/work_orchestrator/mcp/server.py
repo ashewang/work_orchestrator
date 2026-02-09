@@ -105,47 +105,13 @@ def get_task(ctx: Context, task_id: str) -> dict:
 def update_task_status(ctx: Context, task_id: str, status: str) -> dict:
     """Update a task's status. Valid statuses: todo, in-progress, done, blocked, review.
 
-    When moving to 'in-progress', a git worktree is automatically created.
-    When moving to 'done', the worktree is automatically removed.
+    Use create_worktree / remove_worktree separately if you need a worktree.
     """
     app = _ctx(ctx)
-    config = _cfg(ctx)
 
     task = tasks_mod.update_task_status(app.db, task_id, status)
     if not task:
         return {"error": f"Task not found: {task_id}"}
-
-    # Auto-create worktree when starting
-    if status == "in-progress" and not task.worktree_path:
-        try:
-            project = projects_mod.get_project(app.db, task.project_id)
-            repo = project.repo_path if project else str(config.repo_path)
-            wt = worktrees_mod.create_worktree_for_task(
-                app.db, task_id, repo, config.worktree_dir
-            )
-            task = tasks_mod.get_task(app.db, task_id)  # refresh
-            result = _task_to_dict(task)
-            result["worktree_created"] = wt
-            return result
-        except Exception as e:
-            result = _task_to_dict(task)
-            result["worktree_error"] = str(e)
-            return result
-
-    # Auto-remove worktree when done
-    if status == "done" and task.worktree_path:
-        try:
-            project = projects_mod.get_project(app.db, task.project_id)
-            repo = project.repo_path if project else str(config.repo_path)
-            wt = worktrees_mod.remove_worktree_for_task(app.db, task_id, repo)
-            task = tasks_mod.get_task(app.db, task_id)  # refresh
-            result = _task_to_dict(task)
-            result["worktree_removed"] = wt
-            return result
-        except Exception as e:
-            result = _task_to_dict(task)
-            result["worktree_error"] = str(e)
-            return result
 
     return _task_to_dict(task)
 
