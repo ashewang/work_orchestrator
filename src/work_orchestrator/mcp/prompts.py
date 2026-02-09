@@ -47,6 +47,25 @@ def review_task(task_id: str) -> str:
 
 
 @mcp.prompt()
+def good_morning(project: str = "default") -> str:
+    """Generate a warm, funny greeting to start the work session."""
+    return (
+        f"I just started a work session on the '{project}' project. "
+        f"Give me a warm, personalized greeting to get me pumped for work.\n\n"
+        f"Please:\n"
+        f"1. Use list_tasks to see what I've been working on (in-progress, recently done, what's next)\n"
+        f"2. Use search_memories with a broad query like 'preferences' or 'context' to learn about me\n"
+        f"3. Use list_tasks with status='todo' to see what's ahead\n\n"
+        f"Then write a short, warm, and genuinely funny greeting (2-4 sentences) that:\n"
+        f"- References something specific about my project state (what I finished, what's in progress, what's next)\n"
+        f"- Has a bit of wit or humor (dad jokes welcome, cringe not)\n"
+        f"- Ends with a quick summary: X tasks done, Y in progress, Z ready to go\n"
+        f"- Feels like a supportive coworker who actually knows what I'm working on\n\n"
+        f"Keep it concise. No bulleted lists. Just a natural, friendly paragraph."
+    )
+
+
+@mcp.prompt()
 def dispatch_agents(project: str = "default") -> str:
     """Generate a prompt to dispatch agents to work on ready tasks."""
     return (
