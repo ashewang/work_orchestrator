@@ -52,3 +52,33 @@ class TaskEvent:
     old_value: str | None = None
     new_value: str | None = None
     created_at: datetime | None = None
+
+
+@dataclass
+class WorktreeSlot:
+    id: int | None = None
+    project_id: str = ""
+    path: str = ""
+    label: str = ""
+    branch: str | None = None
+    status: str = "available"
+    current_task_id: str | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+@dataclass
+class AgentRun:
+    id: int | None = None
+    task_id: str = ""
+    worktree_slot_id: int | None = None
+    pid: int | None = None
+    status: str = "running"
+    instructions: str = ""
+    model: str = "sonnet"
+    max_budget: float | None = None
+    output_file: str | None = None
+    result_summary: str | None = None
+    exit_code: int | None = None
+    started_at: datetime | None = None
+    completed_at: datetime | None = None

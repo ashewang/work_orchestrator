@@ -6,6 +6,7 @@ import sys
 import click
 
 from work_orchestrator.config import get_config
+from work_orchestrator.core import agents as agents_mod
 from work_orchestrator.core import memory as memory_mod
 from work_orchestrator.core import projects as projects_mod
 from work_orchestrator.core import tasks as tasks_mod
@@ -371,6 +372,153 @@ def slack_status(project, channel):
         except slack_mod.SlackError as e:
             click.echo(f"Error: {e}", err=True)
             sys.exit(1)
+
+
+# ── Agent Commands ───────────────────────────────────────────────────────────
+
+
+@main.group("agent")
+def agent_group():
+    """Manage Claude sub-agents."""
+    pass
+
+
+@agent_group.command("register")
+@click.argument("project")
+def agent_register(project):
+    """Auto-discover and register worktree slots for a project."""
+    with _get_db() as db:
+        proj = projects_mod.get_project(db, project)
+        if not proj:
+            click.echo(f"Project not found: {project}", err=True)
+            sys.exit(1)
+        slots = agents_mod.discover_and_register_worktrees(db, project, proj.repo_path)
+        if not slots:
+            click.echo("No new worktrees to register.")
+            return
+        for s in slots:
+            click.echo(f"  Registered: {s.label} -> {s.path} ({s.branch})")
+
+
+@agent_group.command("slots")
+@click.argument("project")
+@click.option("--status", default=None, help="Filter: available or occupied")
+def agent_slots(project, status):
+    """List worktree slots for a project."""
+    with _get_db() as db:
+        slots = agents_mod.list_worktree_slots(db, project, status=status)
+        if not slots:
+            click.echo("No slots found.")
+            return
+        for s in slots:
+            task_info = f" [task: {s.current_task_id}]" if s.current_task_id else ""
+            click.echo(f"  [{s.status}] {s.label}: {s.path}{task_info}")
+
+
+@agent_group.command("assign")
+@click.argument("task_id")
+@click.argument("slot_label")
+@click.option("--project", default="default")
+def agent_assign(task_id, slot_label, project):
+    """Assign a task to a worktree slot."""
+    with _get_db() as db:
+        slot = agents_mod.get_slot_by_label(db, project, slot_label)
+        if not slot:
+            click.echo(f"Slot not found: {slot_label}", err=True)
+            sys.exit(1)
+        try:
+            updated = agents_mod.assign_task_to_slot(db, task_id, slot.id)
+            click.echo(f"Assigned {task_id} to slot '{updated.label}' ({updated.path})")
+        except ValueError as e:
+            click.echo(f"Error: {e}", err=True)
+            sys.exit(1)
+
+
+@agent_group.command("launch")
+@click.argument("task_id")
+@click.argument("instructions")
+@click.option("--model", default=None, help="Model: sonnet or opus")
+@click.option("--max-budget", type=float, default=None, help="Max budget in USD")
+def agent_launch(task_id, instructions, model, max_budget):
+    """Launch a Claude sub-agent for a task."""
+    config = get_config()
+    with _get_db() as db:
+        m = model or config.agent_default_model
+        b = max_budget or config.agent_default_budget
+        try:
+            run = agents_mod.launch_agent(
+                db, task_id, instructions,
+                output_dir=config.agent_output_dir,
+                model=m, max_budget=b,
+            )
+            click.echo(f"Agent launched for task '{task_id}'")
+            click.echo(f"  PID: {run.pid}")
+            click.echo(f"  Model: {run.model}")
+            click.echo(f"  Output: {run.output_file}")
+        except ValueError as e:
+            click.echo(f"Error: {e}", err=True)
+            sys.exit(1)
+
+
+@agent_group.command("status")
+@click.argument("task_id")
+def agent_status_cmd(task_id):
+    """Check agent status for a task."""
+    with _get_db() as db:
+        run = agents_mod.get_latest_agent_run(db, task_id)
+        if not run:
+            click.echo(f"No agent runs found for task: {task_id}")
+            return
+        click.echo(f"Agent run #{run.id} for task '{run.task_id}'")
+        click.echo(f"  Status: {run.status}")
+        click.echo(f"  PID: {run.pid}")
+        click.echo(f"  Model: {run.model}")
+        if run.started_at:
+            click.echo(f"  Started: {run.started_at}")
+        if run.completed_at:
+            click.echo(f"  Completed: {run.completed_at}")
+        if run.exit_code is not None:
+            click.echo(f"  Exit code: {run.exit_code}")
+        if run.result_summary:
+            click.echo(f"  Summary: {run.result_summary}")
+
+
+@agent_group.command("list")
+@click.option("--status", default=None, help="Filter: running, completed, failed, cancelled")
+@click.option("--project", default=None)
+def agent_list(status, project):
+    """List all agent runs."""
+    with _get_db() as db:
+        runs = agents_mod.list_agent_runs(db, status=status, project_id=project)
+        if not runs:
+            click.echo("No agent runs found.")
+            return
+        for run in runs:
+            click.echo(f"  [{run.status.upper()}] task={run.task_id} pid={run.pid} model={run.model}")
+
+
+@agent_group.command("cancel")
+@click.argument("task_id")
+def agent_cancel(task_id):
+    """Cancel a running agent."""
+    with _get_db() as db:
+        run = agents_mod.cancel_agent(db, task_id)
+        if not run:
+            click.echo(f"No running agent found for task: {task_id}", err=True)
+            sys.exit(1)
+        click.echo(f"Agent cancelled for task '{task_id}' (PID {run.pid})")
+
+
+@agent_group.command("output")
+@click.argument("task_id")
+def agent_output(task_id):
+    """Show the captured output of an agent run."""
+    with _get_db() as db:
+        output = agents_mod.get_agent_output(db, task_id)
+        if not output:
+            click.echo(f"No output found for task: {task_id}", err=True)
+            sys.exit(1)
+        click.echo(output)
 
 
 # ── Dashboard Command ────────────────────────────────────────────────────────

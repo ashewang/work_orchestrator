@@ -20,7 +20,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     project_id TEXT NOT NULL REFERENCES projects(id),
     title TEXT NOT NULL,
     description TEXT DEFAULT '',
-    status TEXT DEFAULT 'todo' CHECK (status IN ('todo', 'in-progress', 'done', 'blocked')),
+    status TEXT DEFAULT 'todo' CHECK (status IN ('todo', 'in-progress', 'done', 'blocked', 'review')),
     parent_task_id TEXT REFERENCES tasks(id),
     branch_name TEXT,
     worktree_path TEXT,
@@ -54,6 +54,34 @@ CREATE TABLE IF NOT EXISTS memories (
     created_at TEXT DEFAULT (datetime('now')),
     updated_at TEXT DEFAULT (datetime('now')),
     UNIQUE(key, project_id)
+);
+
+CREATE TABLE IF NOT EXISTS worktree_slots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id TEXT NOT NULL REFERENCES projects(id),
+    path TEXT NOT NULL UNIQUE,
+    label TEXT NOT NULL,
+    branch TEXT,
+    status TEXT DEFAULT 'available' CHECK (status IN ('available', 'occupied')),
+    current_task_id TEXT REFERENCES tasks(id),
+    created_at TEXT DEFAULT (datetime('now')),
+    updated_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS agent_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id TEXT NOT NULL REFERENCES tasks(id),
+    worktree_slot_id INTEGER REFERENCES worktree_slots(id),
+    pid INTEGER,
+    status TEXT DEFAULT 'running' CHECK (status IN ('running', 'completed', 'failed', 'cancelled')),
+    instructions TEXT NOT NULL,
+    model TEXT DEFAULT 'sonnet',
+    max_budget REAL,
+    output_file TEXT,
+    result_summary TEXT,
+    exit_code INTEGER,
+    started_at TEXT DEFAULT (datetime('now')),
+    completed_at TEXT
 );
 """
 
@@ -91,6 +119,23 @@ def _run_migrations(conn: sqlite3.Connection):
             conn.execute(sql)
         except sqlite3.OperationalError:
             pass  # Column already exists
+
+    # Migrate CHECK constraint to include 'review' status
+    table_sql = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE name='tasks' AND type='table'"
+    ).fetchone()
+    if table_sql and "'review'" not in table_sql[0]:
+        new_sql = table_sql[0].replace(
+            "('todo', 'in-progress', 'done', 'blocked')",
+            "('todo', 'in-progress', 'done', 'blocked', 'review')",
+        )
+        conn.execute("PRAGMA writable_schema=ON")
+        conn.execute(
+            "UPDATE sqlite_master SET sql=? WHERE name='tasks' AND type='table'",
+            (new_sql,),
+        )
+        conn.execute("PRAGMA writable_schema=OFF")
+
     conn.commit()
 
 
