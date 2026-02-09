@@ -10,213 +10,193 @@ def get_dashboard_html() -> str:
 <title>Work Orchestrator</title>
 <style>
   :root {
-    --bg: #0d1117; --surface: #161b22; --border: #30363d;
-    --text: #e6edf3; --text-muted: #8b949e; --text-dim: #6e7681;
-    --todo: #8b949e; --in-progress: #58a6ff; --done: #3fb950; --blocked: #f85149;
-    --accent: #58a6ff; --link: #58a6ff;
+    --bg: #0a0c10; --bg-raised: #0d1117; --surface: #151b23;
+    --surface-hover: #1c2333; --border: #262d38; --border-subtle: #1e252f;
+    --text: #e2e8f0; --text-secondary: #94a3b8; --text-dim: #64748b;
+    --todo: #94a3b8; --in-progress: #60a5fa; --done: #4ade80;
+    --blocked: #f87171; --review: #c084fc;
+    --accent: #60a5fa; --link: #60a5fa;
+    --p0: #ef4444; --p1: #f97316; --p2: #eab308; --p3: #60a5fa;
+    --p4: #94a3b8; --p5: #64748b; --p6: #475569;
+    --radius: 10px; --radius-sm: 6px;
   }
+
   * { margin: 0; padding: 0; box-sizing: border-box; }
-  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
-         background: var(--bg); color: var(--text); line-height: 1.5; }
-  .container { max-width: 960px; margin: 0 auto; padding: 24px 16px; }
 
-  /* Header */
-  header { display: flex; justify-content: space-between; align-items: center;
-           padding-bottom: 16px; border-bottom: 1px solid var(--border); margin-bottom: 24px; }
-  header h1 { font-size: 20px; font-weight: 600; }
-  header select { background: var(--surface); color: var(--text); border: 1px solid var(--border);
-                  padding: 6px 12px; border-radius: 6px; font-size: 14px; cursor: pointer; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Inter', Helvetica, Arial, sans-serif;
+    background: var(--bg); color: var(--text); line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
 
-  /* Project info */
-  .project-info { background: var(--surface); border: 1px solid var(--border);
-                  border-radius: 8px; padding: 16px; margin-bottom: 20px; }
-  .project-info h2 { font-size: 16px; margin-bottom: 8px; }
-  .project-meta { font-size: 13px; color: var(--text-muted); }
-  .project-meta code { background: var(--bg); padding: 2px 6px; border-radius: 4px; font-size: 12px; }
+  .page { max-width: 1100px; margin: 0 auto; padding: 32px 24px 64px; }
 
-  /* Summary bar */
-  .summary { display: flex; gap: 16px; align-items: center; margin-bottom: 24px; flex-wrap: wrap; }
-  .stat { display: flex; align-items: center; gap: 6px; font-size: 14px; }
-  .stat .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
-  .stat .dot.todo { background: var(--todo); }
-  .stat .dot.in-progress { background: var(--in-progress); }
-  .stat .dot.done { background: var(--done); }
-  .stat .dot.blocked { background: var(--blocked); }
-  .progress-bar { flex: 1; min-width: 120px; height: 8px; background: var(--surface);
-                  border-radius: 4px; overflow: hidden; border: 1px solid var(--border); }
-  .progress-bar .fill { height: 100%; background: var(--done); transition: width 0.3s; }
-  .progress-pct { font-size: 13px; color: var(--text-muted); min-width: 40px; }
+  /* ── Header ──────────────────────────── */
+  .page-header {
+    display: flex; justify-content: space-between; align-items: center;
+    margin-bottom: 32px; padding-bottom: 20px; border-bottom: 1px solid var(--border-subtle);
+  }
+  .page-header h1 {
+    font-size: 22px; font-weight: 700; letter-spacing: -0.3px;
+    background: linear-gradient(135deg, #e2e8f0, #94a3b8);
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+  }
+  .header-meta { font-size: 12px; color: var(--text-dim); display: flex; align-items: center; gap: 12px; }
+  .header-meta button {
+    background: var(--surface); color: var(--text-secondary); border: 1px solid var(--border);
+    padding: 5px 14px; border-radius: var(--radius-sm); cursor: pointer; font-size: 12px;
+    transition: all 0.15s;
+  }
+  .header-meta button:hover { color: var(--text); border-color: var(--text-dim); background: var(--surface-hover); }
+  .status-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--done); display: inline-block; }
+  .status-dot.loading { background: var(--in-progress); animation: pulse 1.5s infinite; }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
 
-  /* Task list */
-  .task-list { display: flex; flex-direction: column; gap: 2px; }
-  .task-card { background: var(--surface); border: 1px solid var(--border);
-               border-radius: 8px; padding: 12px 16px; }
-  .task-card.subtask { margin-left: 32px; border-left: 3px solid var(--border); }
-  .task-header { display: flex; align-items: center; gap: 10px; }
-  .badge { display: inline-block; padding: 2px 10px; border-radius: 12px; font-size: 11px;
-           font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
-  .badge.todo { background: rgba(139,148,158,0.15); color: var(--todo); }
-  .badge.in-progress { background: rgba(88,166,255,0.15); color: var(--in-progress); }
-  .badge.done { background: rgba(63,185,80,0.15); color: var(--done); }
-  .badge.blocked { background: rgba(248,81,73,0.15); color: var(--blocked); }
-  .task-title { font-weight: 600; font-size: 14px; }
-  .task-id { font-size: 12px; color: var(--text-dim); font-family: monospace; }
-  .task-details { margin-top: 6px; font-size: 13px; color: var(--text-muted); display: flex;
-                  flex-direction: column; gap: 3px; }
-  .task-details code { background: var(--bg); padding: 1px 5px; border-radius: 3px; font-size: 12px; }
-  .task-details a { color: var(--link); text-decoration: none; }
-  .task-details a:hover { text-decoration: underline; }
-  .dep-list { font-size: 12px; color: var(--text-dim); }
+  /* ── Project Card ────────────────────── */
+  .project-card {
+    background: var(--bg-raised); border: 1px solid var(--border-subtle);
+    border-radius: var(--radius); margin-bottom: 24px; overflow: hidden;
+    transition: border-color 0.2s;
+  }
+  .project-card:hover { border-color: var(--border); }
+  .project-head {
+    padding: 18px 22px; cursor: pointer; user-select: none;
+    display: flex; justify-content: space-between; align-items: center;
+  }
+  .project-head:hover { background: var(--surface); }
+  .project-name { font-size: 16px; font-weight: 600; display: flex; align-items: center; gap: 10px; }
+  .project-name .chevron {
+    display: inline-block; font-size: 11px; color: var(--text-dim); transition: transform 0.2s;
+  }
+  .project-card.expanded .project-name .chevron { transform: rotate(90deg); }
+  .project-badges { display: flex; gap: 8px; align-items: center; }
+  .count-badge {
+    display: inline-flex; align-items: center; gap: 4px; padding: 2px 9px;
+    border-radius: 12px; font-size: 11px; font-weight: 600;
+  }
+  .count-badge .dot { width: 6px; height: 6px; border-radius: 50%; }
+  .count-badge.todo { background: rgba(148,163,184,0.1); color: var(--todo); }
+  .count-badge.todo .dot { background: var(--todo); }
+  .count-badge.in-progress { background: rgba(96,165,250,0.1); color: var(--in-progress); }
+  .count-badge.in-progress .dot { background: var(--in-progress); }
+  .count-badge.done { background: rgba(74,222,128,0.1); color: var(--done); }
+  .count-badge.done .dot { background: var(--done); }
+  .count-badge.blocked { background: rgba(248,113,113,0.1); color: var(--blocked); }
+  .count-badge.blocked .dot { background: var(--blocked); }
+  .count-badge.review { background: rgba(192,132,252,0.1); color: var(--review); }
+  .count-badge.review .dot { background: var(--review); }
 
-  /* Empty state */
-  .empty { text-align: center; padding: 48px; color: var(--text-muted); }
-  .empty h3 { margin-bottom: 8px; }
+  .project-body { display: none; border-top: 1px solid var(--border-subtle); }
+  .project-card.expanded .project-body { display: block; }
 
-  /* Refresh indicator */
-  .refresh-bar { display: flex; justify-content: space-between; align-items: center;
-                 margin-bottom: 16px; font-size: 12px; color: var(--text-dim); }
-  .refresh-bar button { background: var(--surface); color: var(--text-muted); border: 1px solid var(--border);
-                        padding: 4px 10px; border-radius: 4px; cursor: pointer; font-size: 12px; }
-  .refresh-bar button:hover { color: var(--text); border-color: var(--text-muted); }
+  .project-meta-bar {
+    padding: 12px 22px; font-size: 12px; color: var(--text-dim);
+    display: flex; gap: 16px; align-items: center; border-bottom: 1px solid var(--border-subtle);
+    background: var(--surface);
+  }
+  .project-meta-bar code {
+    background: var(--bg); padding: 1px 6px; border-radius: 4px;
+    font-size: 11px; color: var(--text-secondary);
+  }
+
+  .progress-row {
+    padding: 14px 22px; display: flex; align-items: center; gap: 14px;
+    border-bottom: 1px solid var(--border-subtle);
+  }
+  .progress-track {
+    flex: 1; height: 6px; background: var(--surface);
+    border-radius: 3px; overflow: hidden;
+  }
+  .progress-fill { height: 100%; background: var(--done); border-radius: 3px; transition: width 0.4s ease; }
+  .progress-label { font-size: 12px; color: var(--text-dim); min-width: 36px; text-align: right; font-weight: 600; }
+
+  /* ── Task Rows ───────────────────────── */
+  .task-list { padding: 6px 0; }
+  .task-row {
+    padding: 10px 22px; display: flex; align-items: center; gap: 12px;
+    transition: background 0.1s;
+  }
+  .task-row:hover { background: var(--surface); }
+  .task-row.subtask { padding-left: 52px; }
+
+  .status-icon { width: 18px; height: 18px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; }
+  .status-icon svg { width: 16px; height: 16px; }
+  .status-icon.todo svg { color: var(--todo); }
+  .status-icon.in-progress svg { color: var(--in-progress); }
+  .status-icon.done svg { color: var(--done); }
+  .status-icon.blocked svg { color: var(--blocked); }
+  .status-icon.review svg { color: var(--review); }
+
+  .prio-tag {
+    font-size: 10px; font-weight: 700; padding: 1px 6px; border-radius: 4px;
+    flex-shrink: 0; letter-spacing: 0.3px;
+  }
+  .prio-tag.p0 { background: rgba(239,68,68,0.15); color: var(--p0); }
+  .prio-tag.p1 { background: rgba(249,115,22,0.15); color: var(--p1); }
+  .prio-tag.p2 { background: rgba(234,179,8,0.15); color: var(--p2); }
+  .prio-tag.p3 { background: rgba(96,165,250,0.1); color: var(--p3); }
+  .prio-tag.p4 { background: rgba(148,163,184,0.08); color: var(--p4); }
+  .prio-tag.p5 { background: rgba(100,116,139,0.08); color: var(--p5); }
+  .prio-tag.p6 { background: rgba(71,85,105,0.08); color: var(--p6); }
+
+  .task-info { flex: 1; min-width: 0; }
+  .task-name { font-size: 13px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .task-sub-line { font-size: 11px; color: var(--text-dim); display: flex; gap: 10px; flex-wrap: wrap; margin-top: 1px; }
+  .task-sub-line code { font-size: 10px; background: var(--bg); padding: 0 4px; border-radius: 3px; }
+  .task-sub-line a { color: var(--link); text-decoration: none; }
+  .task-sub-line a:hover { text-decoration: underline; }
+  .task-slug { font-size: 11px; color: var(--text-dim); font-family: monospace; flex-shrink: 0; }
+
+  /* ── Empty State ─────────────────────── */
+  .empty {
+    text-align: center; padding: 64px 24px; color: var(--text-dim);
+  }
+  .empty h3 { font-size: 16px; font-weight: 600; color: var(--text-secondary); margin-bottom: 6px; }
+  .empty p { font-size: 13px; }
+  .empty code { background: var(--surface); padding: 2px 8px; border-radius: 4px; font-size: 12px; }
+
+  /* ── Filter Tabs ─────────────────────── */
+  .filter-bar {
+    padding: 8px 22px; display: flex; gap: 4px; align-items: center;
+    border-bottom: 1px solid var(--border-subtle);
+  }
+  .filter-tab {
+    background: none; border: none; color: var(--text-dim); font-size: 11px;
+    font-weight: 500; padding: 4px 10px; border-radius: 4px; cursor: pointer;
+    transition: all 0.1s;
+  }
+  .filter-tab:hover { color: var(--text-secondary); background: var(--surface); }
+  .filter-tab.active { color: var(--text); background: var(--surface-hover); }
 </style>
 </head>
 <body>
-<div class="container">
-  <header>
+<div class="page">
+  <div class="page-header">
     <h1>Work Orchestrator</h1>
-    <select id="project-picker"><option value="">Loading...</option></select>
-  </header>
-  <div id="content">
-    <div class="empty"><h3>Select a project</h3><p>Choose a project from the dropdown above.</p></div>
+    <div class="header-meta">
+      <span><span class="status-dot loading" id="status-dot"></span> Loading</span>
+      <button onclick="refreshAll()">Refresh</button>
+    </div>
   </div>
+  <div id="projects"></div>
 </div>
 
 <script>
 const API = '';
-let currentProject = null;
-let refreshTimer = null;
+const projectFilters = {};
+
+const STATUS_ICONS = {
+  'todo': '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="6"/></svg>',
+  'in-progress': '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="6"/><path d="M8 4v4l2.5 1.5" stroke-linecap="round"/></svg>',
+  'done': '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="6"/><path d="M5.5 8l1.5 2 3.5-4" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+  'blocked': '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="6"/><path d="M6 6l4 4M10 6l-4 4" stroke-linecap="round"/></svg>',
+  'review': '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="6"/><circle cx="8" cy="8" r="1.5" fill="currentColor"/></svg>',
+};
 
 async function fetchJSON(path) {
   const res = await fetch(API + path);
   if (!res.ok) return null;
   return res.json();
-}
-
-async function loadProjects() {
-  const picker = document.getElementById('project-picker');
-  const projects = await fetchJSON('/api/projects');
-  if (!projects || projects.length === 0) {
-    picker.innerHTML = '<option value="">No projects</option>';
-    return;
-  }
-  picker.innerHTML = '<option value="">-- Select project --</option>' +
-    projects.map(p => `<option value="${p.id}">${p.name} (${p.id})</option>`).join('');
-
-  picker.addEventListener('change', () => {
-    currentProject = picker.value || null;
-    if (currentProject) loadDashboard(currentProject);
-  });
-
-  // Auto-select first project
-  if (projects.length > 0) {
-    picker.value = projects[0].id;
-    currentProject = projects[0].id;
-    loadDashboard(currentProject);
-  }
-}
-
-async function loadDashboard(projectId) {
-  const content = document.getElementById('content');
-  const [project, tasks, summary] = await Promise.all([
-    fetchJSON(`/api/projects/${projectId}`),
-    fetchJSON(`/api/projects/${projectId}/tasks`),
-    fetchJSON(`/api/projects/${projectId}/summary`),
-  ]);
-
-  if (!project) { content.innerHTML = '<div class="empty"><h3>Project not found</h3></div>'; return; }
-
-  let html = '';
-
-  // Project info
-  html += `<div class="project-info">
-    <h2>${esc(project.name)}</h2>
-    <div class="project-meta">
-      Repo: <code>${esc(project.repo_path)}</code>
-      &nbsp;&middot;&nbsp; Branch: <code>${esc(project.default_branch)}</code>
-      ${project.slack_channel ? `&nbsp;&middot;&nbsp; Slack: <code>${esc(project.slack_channel)}</code>` : ''}
-    </div>
-  </div>`;
-
-  // Summary
-  if (summary) {
-    const c = summary.counts;
-    html += `<div class="summary">
-      <span class="stat"><span class="dot todo"></span> ${c.todo} todo</span>
-      <span class="stat"><span class="dot in-progress"></span> ${c['in-progress']} in progress</span>
-      <span class="stat"><span class="dot done"></span> ${c.done} done</span>
-      <span class="stat"><span class="dot blocked"></span> ${c.blocked} blocked</span>
-      <div class="progress-bar"><div class="fill" style="width:${summary.progress_pct}%"></div></div>
-      <span class="progress-pct">${summary.progress_pct}%</span>
-    </div>`;
-  }
-
-  // Refresh bar
-  html += `<div class="refresh-bar">
-    <span>Tasks (${tasks ? tasks.length : 0} top-level)</span>
-    <button onclick="loadDashboard('${projectId}')">Refresh</button>
-  </div>`;
-
-  // Tasks
-  if (!tasks || tasks.length === 0) {
-    html += '<div class="empty"><h3>No tasks yet</h3><p>Create tasks with <code>wo task add</code></p></div>';
-  } else {
-    html += '<div class="task-list">';
-    for (const task of tasks) {
-      html += renderTask(task, false);
-      if (task.subtasks) {
-        for (const sub of task.subtasks) {
-          html += renderTask(sub, true);
-        }
-      }
-    }
-    html += '</div>';
-  }
-
-  content.innerHTML = html;
-}
-
-function renderTask(task, isSubtask) {
-  const cls = isSubtask ? 'task-card subtask' : 'task-card';
-  const statusCls = task.status.replace(' ', '-');
-  let details = '';
-
-  if (task.description) {
-    details += `<div>${esc(task.description)}</div>`;
-  }
-  if (task.branch_name) {
-    details += `<div>Branch: <code>${esc(task.branch_name)}</code></div>`;
-  }
-  if (task.worktree_path) {
-    details += `<div>Worktree: <code>${esc(task.worktree_path)}</code></div>`;
-  }
-  if (task.pr_url) {
-    details += `<div>PR: <a href="${esc(task.pr_url)}" target="_blank" rel="noopener">${esc(task.pr_url)}</a></div>`;
-  }
-  if (task.depends_on && task.depends_on.length > 0) {
-    details += `<div class="dep-list">Depends on: ${task.depends_on.map(d => `<code>${esc(d)}</code>`).join(', ')}</div>`;
-  }
-  if (task.completed_at) {
-    details += `<div>Completed: ${new Date(task.completed_at).toLocaleDateString()}</div>`;
-  }
-
-  return `<div class="${cls}">
-    <div class="task-header">
-      <span class="badge ${statusCls}">${esc(task.status)}</span>
-      <span class="task-title">${esc(task.title)}</span>
-      <span class="task-id">${esc(task.id)}</span>
-    </div>
-    ${details ? `<div class="task-details">${details}</div>` : ''}
-  </div>`;
 }
 
 function esc(s) {
@@ -226,16 +206,159 @@ function esc(s) {
   return d.innerHTML;
 }
 
-// Auto-refresh every 30s
-function startAutoRefresh() {
-  if (refreshTimer) clearInterval(refreshTimer);
-  refreshTimer = setInterval(() => {
-    if (currentProject) loadDashboard(currentProject);
-  }, 30000);
+function toggleProject(id) {
+  const card = document.getElementById('proj-' + id);
+  card.classList.toggle('expanded');
 }
 
-loadProjects();
-startAutoRefresh();
+function setFilter(projectId, status) {
+  projectFilters[projectId] = status;
+  loadProjectTasks(projectId);
+  // Update active tab
+  document.querySelectorAll(`#proj-${projectId} .filter-tab`).forEach(t => {
+    t.classList.toggle('active', t.dataset.status === (status || 'all'));
+  });
+}
+
+async function loadProjectTasks(projectId) {
+  const statusFilter = projectFilters[projectId] || null;
+  const url = statusFilter
+    ? `/api/projects/${projectId}/tasks?status=${statusFilter}`
+    : `/api/projects/${projectId}/tasks`;
+  const tasks = await fetchJSON(url) || [];
+  const listEl = document.getElementById('tasks-' + projectId);
+  if (!tasks.length) {
+    listEl.innerHTML = '<div class="empty" style="padding:32px"><p>No tasks match this filter</p></div>';
+    return;
+  }
+  let html = '';
+  for (const task of tasks) {
+    html += renderTask(task, false);
+    if (task.subtasks) {
+      for (const sub of task.subtasks) {
+        html += renderTask(sub, true);
+      }
+    }
+  }
+  listEl.innerHTML = html;
+}
+
+function renderTask(task, isSubtask) {
+  const cls = isSubtask ? 'task-row subtask' : 'task-row';
+  const statusCls = task.status.replace(' ', '-');
+  const icon = STATUS_ICONS[statusCls] || STATUS_ICONS['todo'];
+  const prio = task.priority != null ? task.priority : 3;
+
+  let subLine = [];
+  if (task.description) subLine.push(esc(task.description));
+  if (task.branch_name) subLine.push('branch: <code>' + esc(task.branch_name) + '</code>');
+  if (task.worktree_path) subLine.push('worktree: <code>' + esc(task.worktree_path) + '</code>');
+  if (task.pr_url) subLine.push('<a href="' + esc(task.pr_url) + '" target="_blank" rel="noopener">PR</a>');
+  if (task.depends_on && task.depends_on.length) subLine.push('deps: ' + task.depends_on.map(d => '<code>' + esc(d) + '</code>').join(', '));
+
+  return `<div class="${cls}">
+    <span class="status-icon ${statusCls}">${icon}</span>
+    <span class="prio-tag p${prio}">P${prio}</span>
+    <div class="task-info">
+      <div class="task-name">${esc(task.title)}</div>
+      ${subLine.length ? '<div class="task-sub-line">' + subLine.join(' &middot; ') + '</div>' : ''}
+    </div>
+    <span class="task-slug">${esc(task.id)}</span>
+  </div>`;
+}
+
+function renderProjectCard(project, summary, tasks) {
+  const c = summary ? summary.counts : {};
+  const pct = summary ? summary.progress_pct : 0;
+
+  function badge(status, label, count) {
+    if (!count) return '';
+    return `<span class="count-badge ${status}"><span class="dot"></span>${count} ${label}</span>`;
+  }
+
+  const statuses = ['all', 'todo', 'in-progress', 'done', 'blocked', 'review'];
+  const filterTabs = statuses.map(s => {
+    const label = s === 'all' ? 'All' : s.charAt(0).toUpperCase() + s.slice(1).replace('-', ' ');
+    const active = s === 'all' ? ' active' : '';
+    return `<button class="filter-tab${active}" data-status="${s}" onclick="setFilter('${project.id}', ${s === 'all' ? 'null' : "'" + s + "'"})">
+      ${label}</button>`;
+  }).join('');
+
+  let taskHtml = '';
+  if (!tasks || !tasks.length) {
+    taskHtml = '<div class="empty" style="padding:32px"><p>No tasks yet. Create one with <code>wo task add</code></p></div>';
+  } else {
+    for (const task of tasks) {
+      taskHtml += renderTask(task, false);
+      if (task.subtasks) {
+        for (const sub of task.subtasks) {
+          taskHtml += renderTask(sub, true);
+        }
+      }
+    }
+  }
+
+  return `<div class="project-card expanded" id="proj-${project.id}">
+    <div class="project-head" onclick="toggleProject('${project.id}')">
+      <span class="project-name">
+        <span class="chevron">&#9654;</span>
+        ${esc(project.name)}
+      </span>
+      <div class="project-badges">
+        ${badge('in-progress', 'active', c['in-progress'])}
+        ${badge('todo', 'todo', c.todo)}
+        ${badge('review', 'review', c.review)}
+        ${badge('blocked', 'blocked', c.blocked)}
+        ${badge('done', 'done', c.done)}
+      </div>
+    </div>
+    <div class="project-body">
+      <div class="project-meta-bar">
+        <span>Repo: <code>${esc(project.repo_path)}</code></span>
+        <span>Branch: <code>${esc(project.default_branch)}</code></span>
+        ${project.slack_channel ? '<span>Slack: <code>' + esc(project.slack_channel) + '</code></span>' : ''}
+      </div>
+      <div class="progress-row">
+        <div class="progress-track"><div class="progress-fill" style="width:${pct}%"></div></div>
+        <span class="progress-label">${pct}%</span>
+      </div>
+      <div class="filter-bar">${filterTabs}</div>
+      <div class="task-list" id="tasks-${project.id}">${taskHtml}</div>
+    </div>
+  </div>`;
+}
+
+async function loadAll() {
+  const dot = document.getElementById('status-dot');
+  dot.classList.add('loading');
+
+  const projects = await fetchJSON('/api/projects') || [];
+  const container = document.getElementById('projects');
+
+  if (!projects.length) {
+    container.innerHTML = '<div class="empty"><h3>No projects</h3><p>Create one with the CLI or MCP tools.</p></div>';
+    dot.classList.remove('loading');
+    return;
+  }
+
+  const results = await Promise.all(projects.map(async p => {
+    const [summary, tasks] = await Promise.all([
+      fetchJSON(`/api/projects/${p.id}/summary`),
+      fetchJSON(`/api/projects/${p.id}/tasks`),
+    ]);
+    return { project: p, summary, tasks };
+  }));
+
+  container.innerHTML = results.map(r => renderProjectCard(r.project, r.summary, r.tasks)).join('');
+
+  dot.classList.remove('loading');
+  dot.parentElement.childNodes[1].textContent = ' ' + new Date().toLocaleTimeString();
+}
+
+function refreshAll() { loadAll(); }
+
+loadAll();
+setInterval(loadAll, 30000);
 </script>
 </body>
 </html>"""

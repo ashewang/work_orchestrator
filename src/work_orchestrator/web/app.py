@@ -72,7 +72,7 @@ async def api_project_summary(request: Request):
             subs = tasks_mod.list_tasks(db, project_id, parent_task_id=t.id)
             all_tasks.extend(subs)
 
-        counts = {"todo": 0, "in-progress": 0, "done": 0, "blocked": 0}
+        counts = {"todo": 0, "in-progress": 0, "done": 0, "blocked": 0, "review": 0}
         for t in all_tasks:
             counts[t.status] = counts.get(t.status, 0) + 1
         total = sum(counts.values())
@@ -135,6 +135,7 @@ def _task_dict(t) -> dict:
         "id": t.id,
         "title": t.title,
         "status": t.status,
+        "priority": t.priority,
         "description": t.description,
         "project_id": t.project_id,
         "parent_task_id": t.parent_task_id,
