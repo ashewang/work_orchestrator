@@ -11,6 +11,9 @@ class Config:
     repo_path: Path = field(default_factory=lambda: Path.cwd())
     slack_bot_token: str | None = None
     worktree_dir: str = ".worktrees"
+    agent_output_dir: str = ".agent_outputs"
+    agent_default_model: str = "sonnet"
+    agent_default_budget: float | None = None
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -26,6 +29,15 @@ class Config:
 
         if wt_dir := os.environ.get("WO_WORKTREE_DIR"):
             config.worktree_dir = wt_dir
+
+        if out_dir := os.environ.get("WO_AGENT_OUTPUT_DIR"):
+            config.agent_output_dir = out_dir
+
+        if model := os.environ.get("WO_AGENT_DEFAULT_MODEL"):
+            config.agent_default_model = model
+
+        if budget := os.environ.get("WO_AGENT_DEFAULT_BUDGET"):
+            config.agent_default_budget = float(budget)
 
         return config
 

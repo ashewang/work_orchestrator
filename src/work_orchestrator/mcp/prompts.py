@@ -44,3 +44,19 @@ def review_task(task_id: str) -> str:
         f"3. Any issues or concerns\n"
         f"4. Whether it's ready to be marked as done"
     )
+
+
+@mcp.prompt()
+def dispatch_agents(project: str = "default") -> str:
+    """Generate a prompt to dispatch agents to work on ready tasks."""
+    return (
+        f"I want to dispatch Claude sub-agents to work on tasks in the '{project}' project.\n\n"
+        f"Please:\n"
+        f"1. Use list_slots to see available worktree slots\n"
+        f"2. Use get_ready_tasks to find tasks that are ready to start\n"
+        f"3. For each ready task that has an available slot:\n"
+        f"   a. Use assign_task to assign the task to a slot\n"
+        f"   b. Use launch_agent with clear instructions for the sub-agent\n"
+        f"4. Use list_agents to confirm all agents are running\n"
+        f"5. Summarize what was dispatched"
+    )

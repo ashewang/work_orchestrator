@@ -10,10 +10,12 @@ from dataclasses import dataclass
 from mcp.server.fastmcp import Context, FastMCP
 
 from work_orchestrator.config import get_config
+from work_orchestrator.core import agents as agents_mod
 from work_orchestrator.core import memory as memory_mod
 from work_orchestrator.core import projects as projects_mod
 from work_orchestrator.core import tasks as tasks_mod
 from work_orchestrator.core import worktrees as worktrees_mod
+from work_orchestrator.core.agents import AgentMonitor
 from work_orchestrator.db.engine import init_db
 from work_orchestrator.integrations import slack as slack_mod
 
@@ -22,6 +24,7 @@ from work_orchestrator.integrations import slack as slack_mod
 class AppContext:
     db: sqlite3.Connection
     config: object
+    agent_monitor: AgentMonitor | None = None
 
 
 @asynccontextmanager
@@ -29,9 +32,17 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
     """Initialize DB connection on startup, close on shutdown."""
     config = get_config()
     db = init_db(config.db_path)
+
+    monitor = AgentMonitor(
+        db_path=config.db_path,
+        slack_token=config.slack_bot_token,
+    )
+    monitor.start()
+
     try:
-        yield AppContext(db=db, config=config)
+        yield AppContext(db=db, config=config, agent_monitor=monitor)
     finally:
+        monitor.stop()
         db.close()
 
 
@@ -91,7 +102,7 @@ def get_task(ctx: Context, task_id: str) -> dict:
 
 @mcp.tool()
 def update_task_status(ctx: Context, task_id: str, status: str) -> dict:
-    """Update a task's status. Valid statuses: todo, in-progress, done, blocked.
+    """Update a task's status. Valid statuses: todo, in-progress, done, blocked, review.
 
     When moving to 'in-progress', a git worktree is automatically created.
     When moving to 'done', the worktree is automatically removed.
@@ -429,3 +440,146 @@ def _task_to_dict(task) -> dict:
     if task.subtasks:
         d["subtasks"] = [_task_to_dict(s) for s in task.subtasks]
     return d
+
+
+def _slot_to_dict(slot) -> dict:
+    d = {
+        "id": slot.id,
+        "project_id": slot.project_id,
+        "path": slot.path,
+        "label": slot.label,
+        "status": slot.status,
+    }
+    if slot.branch:
+        d["branch"] = slot.branch
+    if slot.current_task_id:
+        d["current_task_id"] = slot.current_task_id
+    return d
+
+
+def _agent_run_to_dict(run) -> dict:
+    d = {
+        "id": run.id,
+        "task_id": run.task_id,
+        "pid": run.pid,
+        "status": run.status,
+        "model": run.model,
+        "started_at": run.started_at.isoformat() if run.started_at else None,
+    }
+    if run.max_budget:
+        d["max_budget"] = run.max_budget
+    if run.completed_at:
+        d["completed_at"] = run.completed_at.isoformat()
+    if run.exit_code is not None:
+        d["exit_code"] = run.exit_code
+    if run.result_summary:
+        d["result_summary"] = run.result_summary
+    if run.output_file:
+        d["output_file"] = run.output_file
+    return d
+
+
+# ── Agent Tools ──────────────────────────────────────────────────────────────
+
+
+@mcp.tool()
+def register_worktrees(ctx: Context, project: str) -> list[dict]:
+    """Auto-discover and register git worktrees as available slots for a project.
+    Finds all worktrees in the project's repo and registers any not already tracked."""
+    app = _ctx(ctx)
+    project_obj = projects_mod.get_project(app.db, project)
+    if not project_obj:
+        return [{"error": f"Project not found: {project}"}]
+    slots = agents_mod.discover_and_register_worktrees(
+        app.db, project, project_obj.repo_path
+    )
+    return [_slot_to_dict(s) for s in slots]
+
+
+@mcp.tool()
+def list_slots(ctx: Context, project: str, status: str | None = None) -> list[dict]:
+    """List worktree slots for a project. Filter by status: 'available' or 'occupied'."""
+    app = _ctx(ctx)
+    slots = agents_mod.list_worktree_slots(app.db, project, status=status)
+    return [_slot_to_dict(s) for s in slots]
+
+
+@mcp.tool()
+def assign_task(ctx: Context, task_id: str, slot_label: str, project: str = "default") -> dict:
+    """Assign a task to an available worktree slot by label (e.g. 'glockenspiel_ashe1')."""
+    app = _ctx(ctx)
+    slot = agents_mod.get_slot_by_label(app.db, project, slot_label)
+    if not slot:
+        return {"error": f"Slot not found: '{slot_label}' in project '{project}'"}
+    try:
+        updated = agents_mod.assign_task_to_slot(app.db, task_id, slot.id)
+        return _slot_to_dict(updated)
+    except ValueError as e:
+        return {"error": str(e)}
+
+
+@mcp.tool()
+def launch_agent(
+    ctx: Context,
+    task_id: str,
+    instructions: str,
+    model: str | None = None,
+    max_budget: float | None = None,
+) -> dict:
+    """Launch a Claude CLI sub-agent to work on a task autonomously.
+    The task must be assigned to a worktree slot first.
+    The agent runs in the background; use agent_status to check progress."""
+    app = _ctx(ctx)
+    config = _cfg(ctx)
+    m = model or config.agent_default_model
+    b = max_budget or config.agent_default_budget
+    try:
+        run = agents_mod.launch_agent(
+            app.db, task_id, instructions,
+            output_dir=config.agent_output_dir,
+            model=m,
+            max_budget=b,
+        )
+        return _agent_run_to_dict(run)
+    except ValueError as e:
+        return {"error": str(e)}
+
+
+@mcp.tool()
+def agent_status(ctx: Context, task_id: str) -> dict:
+    """Check the status of the latest agent run for a task."""
+    app = _ctx(ctx)
+    run = agents_mod.get_latest_agent_run(app.db, task_id)
+    if not run:
+        return {"error": f"No agent runs found for task: {task_id}"}
+    return _agent_run_to_dict(run)
+
+
+@mcp.tool()
+def list_agents(ctx: Context, status: str | None = None, project: str | None = None) -> list[dict]:
+    """List all agent runs, optionally filtered by status (running/completed/failed/cancelled)."""
+    app = _ctx(ctx)
+    runs = agents_mod.list_agent_runs(app.db, status=status, project_id=project)
+    return [_agent_run_to_dict(r) for r in runs]
+
+
+@mcp.tool()
+def cancel_agent(ctx: Context, task_id: str) -> dict:
+    """Cancel a running agent for a task."""
+    app = _ctx(ctx)
+    run = agents_mod.cancel_agent(app.db, task_id)
+    if not run:
+        return {"error": f"No running agent found for task: {task_id}"}
+    return _agent_run_to_dict(run)
+
+
+@mcp.tool()
+def get_agent_output(ctx: Context, task_id: str) -> dict:
+    """Read the captured output of the latest agent run for a task."""
+    app = _ctx(ctx)
+    output = agents_mod.get_agent_output(app.db, task_id)
+    if output is None:
+        return {"error": f"No output found for task: {task_id}"}
+    if len(output) > 10000:
+        return {"output": output[:10000], "truncated": True, "total_length": len(output)}
+    return {"output": output, "truncated": False}
