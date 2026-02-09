@@ -131,6 +131,94 @@ class TestDependencies:
         assert "followup" in ids
 
 
+class TestPriority:
+    def test_default_priority(self, db):
+        task = tasks_mod.create_task(db, "Default prio", "test")
+        assert task.priority == 3
+
+    def test_create_with_priority(self, db):
+        task = tasks_mod.create_task(db, "Urgent", "test", priority=0)
+        assert task.priority == 0
+
+    def test_priority_clamped(self, db):
+        task = tasks_mod.create_task(db, "Too high", "test", priority=99)
+        assert task.priority == 6
+        task2 = tasks_mod.create_task(db, "Too low", "test", priority=-5)
+        assert task2.priority == 0
+
+    def test_update_priority(self, db):
+        tasks_mod.create_task(db, "Reprio", "test")
+        task = tasks_mod.update_task_priority(db, "reprio", 1)
+        assert task.priority == 1
+
+    def test_update_priority_logged(self, db):
+        tasks_mod.create_task(db, "Prio event", "test")
+        tasks_mod.update_task_priority(db, "prio-event", 0)
+        events = tasks_mod.get_task_events(db, "prio-event")
+        prio_events = [e for e in events if e.event_type == "priority_changed"]
+        assert len(prio_events) == 1
+        assert prio_events[0].old_value == "3"
+        assert prio_events[0].new_value == "0"
+
+    def test_list_sorted_by_priority(self, db):
+        tasks_mod.create_task(db, "Low prio", "test", priority=5)
+        tasks_mod.create_task(db, "High prio", "test", priority=0)
+        tasks_mod.create_task(db, "Mid prio", "test", priority=3)
+        tasks = tasks_mod.list_tasks(db, "test")
+        priorities = [t.priority for t in tasks]
+        assert priorities == [0, 3, 5]
+
+    def test_ready_tasks_sorted_by_priority(self, db):
+        tasks_mod.create_task(db, "Low ready", "test", priority=5)
+        tasks_mod.create_task(db, "High ready", "test", priority=1)
+        ready = tasks_mod.get_ready_tasks(db, "test")
+        assert ready[0].priority <= ready[-1].priority
+
+
+class TestAddRemoveDependency:
+    def test_add_dependency(self, db):
+        tasks_mod.create_task(db, "Task A", "test")
+        tasks_mod.create_task(db, "Task B", "test")
+        task = tasks_mod.add_dependency(db, "task-b", "task-a")
+        assert "task-a" in task.depends_on
+
+    def test_add_dependency_idempotent(self, db):
+        tasks_mod.create_task(db, "Task X", "test")
+        tasks_mod.create_task(db, "Task Y", "test")
+        tasks_mod.add_dependency(db, "task-y", "task-x")
+        task = tasks_mod.add_dependency(db, "task-y", "task-x")
+        assert task.depends_on.count("task-x") == 1
+
+    def test_add_dependency_nonexistent_dep(self, db):
+        tasks_mod.create_task(db, "Solo", "test")
+        with pytest.raises(ValueError, match="not found"):
+            tasks_mod.add_dependency(db, "solo", "nonexistent")
+
+    def test_remove_dependency(self, db):
+        tasks_mod.create_task(db, "Dep A", "test")
+        tasks_mod.create_task(db, "Dep B", "test", depends_on=["dep-a"])
+        task = tasks_mod.remove_dependency(db, "dep-b", "dep-a")
+        assert "dep-a" not in task.depends_on
+
+    def test_add_dep_logged(self, db):
+        tasks_mod.create_task(db, "Log A", "test")
+        tasks_mod.create_task(db, "Log B", "test")
+        tasks_mod.add_dependency(db, "log-b", "log-a")
+        events = tasks_mod.get_task_events(db, "log-b")
+        dep_events = [e for e in events if e.event_type == "dependency_added"]
+        assert len(dep_events) == 1
+        assert dep_events[0].new_value == "log-a"
+
+    def test_remove_dep_logged(self, db):
+        tasks_mod.create_task(db, "Rem A", "test")
+        tasks_mod.create_task(db, "Rem B", "test", depends_on=["rem-a"])
+        tasks_mod.remove_dependency(db, "rem-b", "rem-a")
+        events = tasks_mod.get_task_events(db, "rem-b")
+        dep_events = [e for e in events if e.event_type == "dependency_removed"]
+        assert len(dep_events) == 1
+        assert dep_events[0].old_value == "rem-a"
+
+
 class TestBreakdown:
     def test_break_down_task(self, db):
         tasks_mod.create_task(db, "Big task", "test")
@@ -141,3 +229,12 @@ class TestBreakdown:
         assert len(subs) == 2
         parent = tasks_mod.get_task(db, "big-task")
         assert len(parent.subtasks) == 2
+
+    def test_break_down_with_priority(self, db):
+        tasks_mod.create_task(db, "Parent task", "test")
+        subs = tasks_mod.break_down_task(db, "parent-task", [
+            {"title": "Urgent sub", "priority": 0},
+            {"title": "Normal sub"},
+        ])
+        assert subs[0].priority == 0
+        assert subs[1].priority == 3

@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     title TEXT NOT NULL,
     description TEXT DEFAULT '',
     status TEXT DEFAULT 'todo' CHECK (status IN ('todo', 'in-progress', 'done', 'blocked', 'review')),
+    priority INTEGER DEFAULT 3,
     parent_task_id TEXT REFERENCES tasks(id),
     branch_name TEXT,
     worktree_path TEXT,
@@ -113,6 +114,7 @@ def _run_migrations(conn: sqlite3.Connection):
     """Run schema migrations idempotently."""
     migrations = [
         "ALTER TABLE tasks ADD COLUMN pr_url TEXT",
+        "ALTER TABLE tasks ADD COLUMN priority INTEGER DEFAULT 3",
     ]
     for sql in migrations:
         try:

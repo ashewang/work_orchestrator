@@ -68,12 +68,13 @@ def create_task(
     project: str = "default",
     description: str = "",
     depends_on: list[str] | None = None,
+    priority: int = 3,
 ) -> dict:
-    """Create a new task. Returns the created task with its generated ID."""
+    """Create a new task. Priority: P0 (highest) to P6 (lowest), default P3."""
     app = _ctx(ctx)
     projects_mod.ensure_default_project(app.db, str(_cfg(ctx).repo_path))
     task = tasks_mod.create_task(
-        app.db, title, project, description, depends_on=depends_on
+        app.db, title, project, description, depends_on=depends_on, priority=priority
     )
     return _task_to_dict(task)
 
@@ -189,6 +190,41 @@ def update_task_pr_url(ctx: Context, task_id: str, pr_url: str) -> dict:
     """Set the PR URL for a task (e.g. after creating a pull request)."""
     app = _ctx(ctx)
     task = tasks_mod.update_task_pr_url(app.db, task_id, pr_url)
+    if not task:
+        return {"error": f"Task not found: {task_id}"}
+    return _task_to_dict(task)
+
+
+@mcp.tool()
+def update_task_priority(ctx: Context, task_id: str, priority: int) -> dict:
+    """Update a task's priority. P0 (highest urgency) to P6 (lowest)."""
+    app = _ctx(ctx)
+    if not 0 <= priority <= 6:
+        return {"error": "Priority must be between 0 (P0) and 6 (P6)"}
+    task = tasks_mod.update_task_priority(app.db, task_id, priority)
+    if not task:
+        return {"error": f"Task not found: {task_id}"}
+    return _task_to_dict(task)
+
+
+@mcp.tool()
+def add_dependency(ctx: Context, task_id: str, depends_on_id: str) -> dict:
+    """Add a dependency to a task. The task will be blocked until the dependency is done."""
+    app = _ctx(ctx)
+    try:
+        task = tasks_mod.add_dependency(app.db, task_id, depends_on_id)
+        if not task:
+            return {"error": f"Task not found: {task_id}"}
+        return _task_to_dict(task)
+    except ValueError as e:
+        return {"error": str(e)}
+
+
+@mcp.tool()
+def remove_dependency(ctx: Context, task_id: str, depends_on_id: str) -> dict:
+    """Remove a dependency from a task."""
+    app = _ctx(ctx)
+    task = tasks_mod.remove_dependency(app.db, task_id, depends_on_id)
     if not task:
         return {"error": f"Task not found: {task_id}"}
     return _task_to_dict(task)
@@ -424,6 +460,7 @@ def _task_to_dict(task) -> dict:
         "id": task.id,
         "title": task.title,
         "status": task.status,
+        "priority": f"P{task.priority}",
         "project": task.project_id,
         "description": task.description,
     }
