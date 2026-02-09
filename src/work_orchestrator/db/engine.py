@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     parent_task_id TEXT REFERENCES tasks(id),
     branch_name TEXT,
     worktree_path TEXT,
+    pr_url TEXT,
     created_at TEXT DEFAULT (datetime('now')),
     updated_at TEXT DEFAULT (datetime('now')),
     completed_at TEXT
@@ -80,6 +81,19 @@ END;
 """
 
 
+def _run_migrations(conn: sqlite3.Connection):
+    """Run schema migrations idempotently."""
+    migrations = [
+        "ALTER TABLE tasks ADD COLUMN pr_url TEXT",
+    ]
+    for sql in migrations:
+        try:
+            conn.execute(sql)
+        except sqlite3.OperationalError:
+            pass  # Column already exists
+    conn.commit()
+
+
 def init_db(db_path: Path) -> sqlite3.Connection:
     """Initialize the database, creating tables if needed."""
     db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -89,6 +103,7 @@ def init_db(db_path: Path) -> sqlite3.Connection:
     conn.execute("PRAGMA foreign_keys=ON")
     conn.executescript(SCHEMA)
     conn.executescript(FTS_SCHEMA)
+    _run_migrations(conn)
     conn.commit()
     return conn
 

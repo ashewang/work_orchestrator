@@ -42,14 +42,15 @@ def create_task(
     description: str = "",
     parent_task_id: str | None = None,
     depends_on: list[str] | None = None,
+    pr_url: str | None = None,
 ) -> Task:
     """Create a new task."""
     task_id = _unique_id(db, slugify(title))
 
     db.execute(
-        """INSERT INTO tasks (id, project_id, title, description, parent_task_id)
-           VALUES (?, ?, ?, ?, ?)""",
-        (task_id, project_id, title, description, parent_task_id),
+        """INSERT INTO tasks (id, project_id, title, description, parent_task_id, pr_url)
+           VALUES (?, ?, ?, ?, ?, ?)""",
+        (task_id, project_id, title, description, parent_task_id, pr_url),
     )
 
     if depends_on:
@@ -250,6 +251,25 @@ def _log_event(
     )
 
 
+def update_task_pr_url(
+    db: sqlite3.Connection,
+    task_id: str,
+    pr_url: str | None,
+) -> Task | None:
+    """Set or clear a task's PR URL."""
+    task = get_task(db, task_id)
+    if not task:
+        return None
+    old_url = task.pr_url
+    db.execute(
+        "UPDATE tasks SET pr_url = ?, updated_at = datetime('now') WHERE id = ?",
+        (pr_url, task_id),
+    )
+    _log_event(db, task_id, "pr_url_changed", old_url, pr_url)
+    db.commit()
+    return get_task(db, task_id)
+
+
 def _row_to_task(row: sqlite3.Row) -> Task:
     return Task(
         id=row["id"],
@@ -260,6 +280,7 @@ def _row_to_task(row: sqlite3.Row) -> Task:
         parent_task_id=row["parent_task_id"],
         branch_name=row["branch_name"],
         worktree_path=row["worktree_path"],
+        pr_url=row["pr_url"],
         created_at=_parse_dt(row["created_at"]),
         updated_at=_parse_dt(row["updated_at"]),
         completed_at=_parse_dt(row["completed_at"]),
