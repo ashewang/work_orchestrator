@@ -22,6 +22,7 @@ class Task:
     title: str
     description: str = ""
     status: str = "todo"
+    priority: int = 3
     parent_task_id: str | None = None
     branch_name: str | None = None
     worktree_path: str | None = None

@@ -43,14 +43,16 @@ def create_task(
     parent_task_id: str | None = None,
     depends_on: list[str] | None = None,
     pr_url: str | None = None,
+    priority: int = 3,
 ) -> Task:
     """Create a new task."""
     task_id = _unique_id(db, slugify(title))
+    priority = max(0, min(6, priority))
 
     db.execute(
-        """INSERT INTO tasks (id, project_id, title, description, parent_task_id, pr_url)
-           VALUES (?, ?, ?, ?, ?, ?)""",
-        (task_id, project_id, title, description, parent_task_id, pr_url),
+        """INSERT INTO tasks (id, project_id, title, description, parent_task_id, pr_url, priority)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        (task_id, project_id, title, description, parent_task_id, pr_url, priority),
     )
 
     if depends_on:
@@ -80,7 +82,7 @@ def get_task(db: sqlite3.Connection, task_id: str) -> Task | None:
     task.depends_on = [d["depends_on_task_id"] for d in deps]
 
     subtasks = db.execute(
-        "SELECT * FROM tasks WHERE parent_task_id = ? ORDER BY created_at",
+        "SELECT * FROM tasks WHERE parent_task_id = ? ORDER BY priority ASC, created_at ASC",
         (task_id,),
     ).fetchall()
     task.subtasks = [_row_to_task(s) for s in subtasks]
@@ -108,7 +110,7 @@ def list_tasks(
     else:
         query += " AND parent_task_id IS NULL"
 
-    query += " ORDER BY created_at"
+    query += " ORDER BY priority ASC, created_at ASC"
     rows = db.execute(query, params).fetchall()
     tasks = []
     for row in rows:
@@ -166,6 +168,7 @@ def break_down_task(
             description=sub.get("description", ""),
             parent_task_id=task_id,
             depends_on=sub.get("depends_on"),
+            priority=sub.get("priority", 3),
         )
         created.append(t)
     return created
@@ -270,6 +273,67 @@ def update_task_pr_url(
     return get_task(db, task_id)
 
 
+def update_task_priority(
+    db: sqlite3.Connection,
+    task_id: str,
+    priority: int,
+) -> Task | None:
+    """Update a task's priority (P0-P6, 0=highest)."""
+    task = get_task(db, task_id)
+    if not task:
+        return None
+    priority = max(0, min(6, priority))
+    old_priority = task.priority
+    db.execute(
+        "UPDATE tasks SET priority = ?, updated_at = datetime('now') WHERE id = ?",
+        (priority, task_id),
+    )
+    _log_event(db, task_id, "priority_changed", str(old_priority), str(priority))
+    db.commit()
+    return get_task(db, task_id)
+
+
+def add_dependency(
+    db: sqlite3.Connection,
+    task_id: str,
+    depends_on_id: str,
+) -> Task | None:
+    """Add a dependency to an existing task."""
+    task = get_task(db, task_id)
+    if not task:
+        return None
+    dep = get_task(db, depends_on_id)
+    if not dep:
+        raise ValueError(f"Dependency task not found: {depends_on_id}")
+    if depends_on_id in task.depends_on:
+        return task  # Already exists
+    db.execute(
+        "INSERT INTO task_dependencies (task_id, depends_on_task_id) VALUES (?, ?)",
+        (task_id, depends_on_id),
+    )
+    _log_event(db, task_id, "dependency_added", None, depends_on_id)
+    db.commit()
+    return get_task(db, task_id)
+
+
+def remove_dependency(
+    db: sqlite3.Connection,
+    task_id: str,
+    depends_on_id: str,
+) -> Task | None:
+    """Remove a dependency from a task."""
+    task = get_task(db, task_id)
+    if not task:
+        return None
+    db.execute(
+        "DELETE FROM task_dependencies WHERE task_id = ? AND depends_on_task_id = ?",
+        (task_id, depends_on_id),
+    )
+    _log_event(db, task_id, "dependency_removed", depends_on_id, None)
+    db.commit()
+    return get_task(db, task_id)
+
+
 def _row_to_task(row: sqlite3.Row) -> Task:
     return Task(
         id=row["id"],
@@ -277,6 +341,7 @@ def _row_to_task(row: sqlite3.Row) -> Task:
         title=row["title"],
         description=row["description"],
         status=row["status"],
+        priority=row["priority"] if row["priority"] is not None else 3,
         parent_task_id=row["parent_task_id"],
         branch_name=row["branch_name"],
         worktree_path=row["worktree_path"],

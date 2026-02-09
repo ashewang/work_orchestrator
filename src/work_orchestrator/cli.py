@@ -64,16 +64,18 @@ def task_group():
 @click.option("--project", default="default", help="Project ID")
 @click.option("--description", "-d", default="", help="Task description")
 @click.option("--depends-on", default=None, help="Comma-separated task IDs this depends on")
-def task_add(title, project, description, depends_on):
+@click.option("--priority", "-p", default=3, type=int, help="Priority P0 (highest) to P6 (lowest)")
+def task_add(title, project, description, depends_on, priority):
     """Create a new task."""
     deps = [d.strip() for d in depends_on.split(",")] if depends_on else None
 
     config = get_config()
     with _get_db() as db:
         projects_mod.ensure_default_project(db, str(config.repo_path))
-        task = tasks_mod.create_task(db, title, project, description, depends_on=deps)
+        task = tasks_mod.create_task(db, title, project, description, depends_on=deps, priority=priority)
         click.echo(f"Created task: {task.id}")
         click.echo(f"  Title: {task.title}")
+        click.echo(f"  Priority: P{task.priority}")
         click.echo(f"  Status: {task.status}")
         if task.depends_on:
             click.echo(f"  Depends on: {', '.join(task.depends_on)}")
@@ -107,13 +109,13 @@ def task_list(project, status, json_output):
             icon = status_icons.get(task.status, "?")
             deps = f" [depends: {', '.join(task.depends_on)}]" if task.depends_on else ""
             wt = f" [worktree: {task.worktree_path}]" if task.worktree_path else ""
-            click.echo(f"  {icon} {task.id}: {task.title} ({task.status}){deps}{wt}")
+            click.echo(f"  {icon} P{task.priority} {task.id}: {task.title} ({task.status}){deps}{wt}")
 
             # Show subtasks
             subtasks = tasks_mod.list_tasks(db, project, parent_task_id=task.id)
             for sub in subtasks:
                 sub_icon = status_icons.get(sub.status, "?")
-                click.echo(f"    {sub_icon} {sub.id}: {sub.title} ({sub.status})")
+                click.echo(f"    {sub_icon} P{sub.priority} {sub.id}: {sub.title} ({sub.status})")
 
 
 @task_group.command("show")
@@ -128,6 +130,7 @@ def task_show(task_id):
 
         click.echo(f"Task: {task.id}")
         click.echo(f"  Title: {task.title}")
+        click.echo(f"  Priority: P{task.priority}")
         click.echo(f"  Status: {task.status}")
         click.echo(f"  Project: {task.project_id}")
         if task.description:
@@ -221,6 +224,57 @@ def task_done(task_id, keep_worktree, notify):
                 click.echo(f"  Slack notification sent to {notify}")
             except Exception as e:
                 click.echo(f"  Slack notification failed: {e}", err=True)
+
+
+@task_group.command("priority")
+@click.argument("task_id")
+@click.argument("priority", type=int)
+def task_priority(task_id, priority):
+    """Set a task's priority (P0 highest to P6 lowest)."""
+    if not 0 <= priority <= 6:
+        click.echo("Priority must be between 0 and 6.", err=True)
+        sys.exit(1)
+    with _get_db() as db:
+        task = tasks_mod.update_task_priority(db, task_id, priority)
+        if not task:
+            click.echo(f"Task not found: {task_id}", err=True)
+            sys.exit(1)
+        click.echo(f"Updated {task_id} priority to P{task.priority}")
+
+
+@task_group.command("add-dep")
+@click.argument("task_id")
+@click.argument("depends_on_id")
+def task_add_dep(task_id, depends_on_id):
+    """Add a dependency to a task."""
+    with _get_db() as db:
+        try:
+            task = tasks_mod.add_dependency(db, task_id, depends_on_id)
+            if not task:
+                click.echo(f"Task not found: {task_id}", err=True)
+                sys.exit(1)
+            click.echo(f"Added dependency: {task_id} now depends on {depends_on_id}")
+            click.echo(f"  Depends on: {', '.join(task.depends_on)}")
+        except ValueError as e:
+            click.echo(f"Error: {e}", err=True)
+            sys.exit(1)
+
+
+@task_group.command("remove-dep")
+@click.argument("task_id")
+@click.argument("depends_on_id")
+def task_remove_dep(task_id, depends_on_id):
+    """Remove a dependency from a task."""
+    with _get_db() as db:
+        task = tasks_mod.remove_dependency(db, task_id, depends_on_id)
+        if not task:
+            click.echo(f"Task not found: {task_id}", err=True)
+            sys.exit(1)
+        click.echo(f"Removed dependency: {task_id} no longer depends on {depends_on_id}")
+        if task.depends_on:
+            click.echo(f"  Remaining deps: {', '.join(task.depends_on)}")
+        else:
+            click.echo(f"  No remaining dependencies")
 
 
 # ── Worktree Commands ────────────────────────────────────────────────────────
@@ -567,6 +621,7 @@ def _task_dict(task) -> dict:
         "id": task.id,
         "title": task.title,
         "status": task.status,
+        "priority": f"P{task.priority}",
         "project": task.project_id,
         "description": task.description,
         "branch": task.branch_name,
