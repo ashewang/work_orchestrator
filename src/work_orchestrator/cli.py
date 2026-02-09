@@ -159,10 +159,8 @@ def task_show(task_id):
 
 @task_group.command("start")
 @click.argument("task_id")
-@click.option("--branch", default=None, help="Custom branch name")
-def task_start(task_id, branch):
-    """Start a task - sets status to in-progress and creates a worktree."""
-    config = get_config()
+def task_start(task_id):
+    """Start a task - sets status to in-progress."""
     with _get_db() as db:
         task = tasks_mod.get_task(db, task_id)
         if not task:
@@ -170,19 +168,7 @@ def task_start(task_id, branch):
             sys.exit(1)
 
         tasks_mod.update_task_status(db, task_id, "in-progress")
-
-        project = projects_mod.get_project(db, task.project_id)
-        repo = project.repo_path if project else str(config.repo_path)
-
-        try:
-            wt = worktrees_mod.create_worktree_for_task(
-                db, task_id, repo, config.worktree_dir, branch_name=branch
-            )
-            click.echo(f"Started task: {task_id}")
-            click.echo(f"  Branch: {wt['branch']}")
-            click.echo(f"  Worktree: {wt['worktree_path']}")
-        except Exception as e:
-            click.echo(f"Task started but worktree creation failed: {e}", err=True)
+        click.echo(f"Started task: {task_id}")
 
 
 @task_group.command("done")

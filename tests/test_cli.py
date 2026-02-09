@@ -101,7 +101,7 @@ class TestCLI:
         assert result.exit_code == 0
         assert "test-key" in result.output
 
-    def test_task_start_creates_worktree(self, cli_env):
+    def test_task_start(self, cli_env):
         runner, repo_path = cli_env
 
         runner.invoke(main, ["init", "wt-test", "--repo-path", repo_path])
@@ -109,7 +109,7 @@ class TestCLI:
 
         result = runner.invoke(main, ["task", "start", "worktree-task"])
         assert result.exit_code == 0
-        assert "Worktree" in result.output or "task/worktree-task" in result.output
+        assert "Started task" in result.output
 
     def test_task_done_removes_worktree(self, cli_env):
         runner, repo_path = cli_env
