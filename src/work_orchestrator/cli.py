@@ -135,6 +135,8 @@ def task_show(task_id):
             click.echo(f"  Branch: {task.branch_name}")
         if task.worktree_path:
             click.echo(f"  Worktree: {task.worktree_path}")
+        if task.pr_url:
+            click.echo(f"  PR: {task.pr_url}")
         if task.depends_on:
             click.echo(f"  Depends on: {', '.join(task.depends_on)}")
         if task.subtasks:
@@ -371,6 +373,26 @@ def slack_status(project, channel):
             sys.exit(1)
 
 
+# ── Dashboard Command ────────────────────────────────────────────────────────
+
+
+@main.command("ui")
+@click.option("--host", default="127.0.0.1", help="Host to bind to")
+@click.option("--port", default=8787, type=int, help="Port to listen on")
+@click.option("--open/--no-open", default=True, help="Open browser automatically")
+def ui_command(host, port, open):
+    """Launch the web dashboard."""
+    import webbrowser
+
+    from work_orchestrator.web.app import run_server
+
+    url = f"http://{host}:{port}"
+    click.echo(f"Starting dashboard at {url}")
+    if open:
+        webbrowser.open(url)
+    run_server(host=host, port=port)
+
+
 # ── MCP Server Command ───────────────────────────────────────────────────────
 
 
@@ -401,6 +423,7 @@ def _task_dict(task) -> dict:
         "description": task.description,
         "branch": task.branch_name,
         "worktree": task.worktree_path,
+        "pr_url": task.pr_url,
         "depends_on": task.depends_on,
     }
 

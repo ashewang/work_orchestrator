@@ -25,6 +25,7 @@ class Task:
     parent_task_id: str | None = None
     branch_name: str | None = None
     worktree_path: str | None = None
+    pr_url: str | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
     completed_at: datetime | None = None

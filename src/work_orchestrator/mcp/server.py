@@ -173,6 +173,16 @@ def get_ready_tasks(ctx: Context, project: str = "default") -> list[dict]:
     return [_task_to_dict(t) for t in tasks]
 
 
+@mcp.tool()
+def update_task_pr_url(ctx: Context, task_id: str, pr_url: str) -> dict:
+    """Set the PR URL for a task (e.g. after creating a pull request)."""
+    app = _ctx(ctx)
+    task = tasks_mod.update_task_pr_url(app.db, task_id, pr_url)
+    if not task:
+        return {"error": f"Task not found: {task_id}"}
+    return _task_to_dict(task)
+
+
 # ── Worktree Tools ────────────────────────────────────────────────────────────
 
 
@@ -412,6 +422,8 @@ def _task_to_dict(task) -> dict:
         d["branch"] = task.branch_name
     if task.worktree_path:
         d["worktree_path"] = task.worktree_path
+    if task.pr_url:
+        d["pr_url"] = task.pr_url
     if task.depends_on:
         d["depends_on"] = task.depends_on
     if task.subtasks:
