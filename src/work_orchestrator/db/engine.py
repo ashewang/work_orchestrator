@@ -144,9 +144,10 @@ def _run_migrations(conn: sqlite3.Connection):
 def init_db(db_path: Path) -> sqlite3.Connection:
     """Initialize the database, creating tables if needed."""
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(db_path))
+    conn = sqlite3.connect(str(db_path), timeout=10)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=5000")
     conn.execute("PRAGMA foreign_keys=ON")
     conn.executescript(SCHEMA)
     conn.executescript(FTS_SCHEMA)
