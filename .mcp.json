@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "work-orchestrator": {
+      "type": "stdio",
+      "command": "uv",
+      "args": ["run", "--directory", "/Users/ashe/codebase/work_orchestrator", "wo", "mcp", "serve"],
+      "env": {
+        "WO_DB_PATH": "${HOME}/.work_orchestrator/wo.db"
+      }
+    }
+  }
+}
