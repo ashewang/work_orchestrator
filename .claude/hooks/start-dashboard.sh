@@ -2,6 +2,9 @@
 # Start the work orchestrator web dashboard if not already running.
 # Used as a Claude Code SessionStart hook.
 
+# Debug: log that this hook ran
+echo "[$(date)] start-dashboard.sh fired" >> /tmp/wo-hook-debug.log
+
 PORT=8787
 
 # Check if something is already listening on the port

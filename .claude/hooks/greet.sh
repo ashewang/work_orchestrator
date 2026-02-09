@@ -2,6 +2,9 @@
 # Gather project state and output a greeting prompt for Claude.
 # SessionStart hook — stdout is injected into Claude's context.
 
+# Debug: log that this hook ran
+echo "[$(date)] greet.sh fired" >> /tmp/wo-hook-debug.log
+
 cd "$CLAUDE_PROJECT_DIR" 2>/dev/null || cd "$(dirname "$0")/../.."
 
 # Gather task summary
