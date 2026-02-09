@@ -116,7 +116,11 @@ def list_task_worktrees(
         "SELECT id, title, status, branch_name, worktree_path FROM tasks WHERE worktree_path IS NOT NULL"
     ).fetchall()
 
-    task_by_path = {row["worktree_path"]: dict(row) for row in task_rows}
+    # Use resolved paths for comparison (handles macOS /private symlinks etc.)
+    task_by_path = {}
+    for row in task_rows:
+        resolved = str(Path(row["worktree_path"]).resolve())
+        task_by_path[resolved] = dict(row)
 
     result = []
     for wt in git_worktrees:
@@ -125,7 +129,8 @@ def list_task_worktrees(
             "branch": wt.branch,
             "head": wt.head,
         }
-        task_info = task_by_path.get(wt.path)
+        resolved_wt = str(Path(wt.path).resolve())
+        task_info = task_by_path.get(resolved_wt)
         if task_info:
             entry["task_id"] = task_info["id"]
             entry["task_title"] = task_info["title"]
