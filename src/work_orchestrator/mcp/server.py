@@ -401,7 +401,7 @@ def setup_profile(
 
     This stores your preferences so greetings and interactions feel personalized.
     - name: Your name (e.g. "Ashe")
-    - language: Your preferred programming language (e.g. "Python", "TypeScript")
+    - language: Your preferred communication language (e.g. "English", "中文", "日本語")
     - vibe: How you like interactions to feel (e.g. "chill", "hype", "professional")
     """
     app = _ctx(ctx)

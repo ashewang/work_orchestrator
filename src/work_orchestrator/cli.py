@@ -67,7 +67,7 @@ def list_projects():
 
 @main.command("setup")
 @click.option("--name", prompt="Your name", help="Your name")
-@click.option("--language", prompt="Preferred language", default="", help="Preferred programming language")
+@click.option("--language", prompt="Preferred language", default="", help="Communication language (e.g. English, 中文)")
 @click.option("--vibe", prompt="Vibe", default="", help="How you like interactions (e.g. chill, hype, professional)")
 def setup_profile(name, language, vibe):
     """Set up your personal profile."""
