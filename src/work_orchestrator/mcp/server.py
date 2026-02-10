@@ -390,6 +390,42 @@ def list_memories(ctx: Context, category: str | None = None) -> list[dict]:
     return [{"key": m.key, "value": m.value, "category": m.category} for m in mems]
 
 
+@mcp.tool()
+def setup_profile(
+    ctx: Context,
+    name: str,
+    language: str | None = None,
+    vibe: str | None = None,
+) -> dict:
+    """Set up your personal profile for the work orchestrator.
+
+    This stores your preferences so greetings and interactions feel personalized.
+    - name: Your name (e.g. "Ashe")
+    - language: Your preferred programming language (e.g. "Python", "TypeScript")
+    - vibe: How you like interactions to feel (e.g. "chill", "hype", "professional")
+    """
+    app = _ctx(ctx)
+    memory_mod.remember(app.db, "user_name", name, category="profile")
+    if language:
+        memory_mod.remember(app.db, "preferred_language", language, category="profile")
+    if vibe:
+        memory_mod.remember(app.db, "vibe", vibe, category="profile")
+    return {
+        "name": name,
+        "language": language,
+        "vibe": vibe,
+        "message": f"Welcome, {name}! Profile saved.",
+    }
+
+
+@mcp.tool()
+def get_profile(ctx: Context) -> dict:
+    """Get the current user profile."""
+    app = _ctx(ctx)
+    mems = memory_mod.list_memories(app.db, category="profile")
+    return {m.key: m.value for m in mems}
+
+
 # ── Project Tools ─────────────────────────────────────────────────────────────
 
 

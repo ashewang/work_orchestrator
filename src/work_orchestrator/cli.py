@@ -50,6 +50,48 @@ def init_project(project_name, repo_path, branch, slack_channel):
         click.echo(f"  Branch: {project.default_branch}")
 
 
+@main.command("projects")
+def list_projects():
+    """List all projects."""
+    with _get_db() as db:
+        projects = projects_mod.list_projects(db)
+        if not projects:
+            click.echo("No projects found.")
+            return
+        for p in projects:
+            click.echo(p.id)
+
+
+# ── Profile Commands ──────────────────────────────────────────────────────────
+
+
+@main.command("setup")
+@click.option("--name", prompt="Your name", help="Your name")
+@click.option("--language", prompt="Preferred language", default="", help="Preferred programming language")
+@click.option("--vibe", prompt="Vibe", default="", help="How you like interactions (e.g. chill, hype, professional)")
+def setup_profile(name, language, vibe):
+    """Set up your personal profile."""
+    with _get_db() as db:
+        memory_mod.remember(db, "user_name", name, category="profile")
+        if language:
+            memory_mod.remember(db, "preferred_language", language, category="profile")
+        if vibe:
+            memory_mod.remember(db, "vibe", vibe, category="profile")
+        click.echo(f"Welcome, {name}! Profile saved.")
+
+
+@main.command("profile")
+def show_profile():
+    """Show your personal profile."""
+    with _get_db() as db:
+        mems = memory_mod.list_memories(db, category="profile")
+        if not mems:
+            click.echo("No profile set up. Run: wo setup")
+            return
+        for m in mems:
+            click.echo(f"{m.key}={m.value}")
+
+
 # ── Task Commands ─────────────────────────────────────────────────────────────
 
 

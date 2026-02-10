@@ -7,8 +7,11 @@ echo "[$(date)] greet.sh fired" >> /tmp/wo-hook-debug.log
 
 cd "$CLAUDE_PROJECT_DIR" 2>/dev/null || cd "$(dirname "$0")/../.."
 
-# Gather tasks across all projects
-PROJECTS=$(sqlite3 ~/.work_orchestrator/wo.db "SELECT id FROM projects;" 2>/dev/null)
+# Get user profile via CLI
+PROFILE=$(uv run wo profile 2>/dev/null)
+
+# Gather tasks across all projects via CLI
+PROJECTS=$(uv run wo projects 2>/dev/null)
 TASKS=""
 for proj in $PROJECTS; do
     PROJ_TASKS=$(uv run wo task list --project "$proj" 2>/dev/null)
@@ -26,8 +29,11 @@ fi
 cat <<EOF
 === WORK ORCHESTRATOR SESSION START ===
 
+Profile:
+$PROFILE
+
 Current tasks:
 $TASKS
 
-IMPORTANT: Before responding to the user's first message, greet them with a short, warm, genuinely funny greeting (2-4 sentences) that references their project state above. Include a quick task summary (done/in-progress/todo counts). Keep it natural — no bullet lists, just a friendly paragraph. Then address whatever they asked.
+IMPORTANT: Before responding to the user's first message, greet them with a short, warm, genuinely funny greeting (2-4 sentences) that references their project state and profile above. Include a quick task summary (done/in-progress/todo counts). Keep it natural — no bullet lists, just a friendly paragraph. Then address whatever they asked.
 EOF
