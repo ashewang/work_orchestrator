@@ -224,7 +224,7 @@ def delegate_task(
     model: str = "sonnet",
     max_budget: float | None = None,
     max_turns: int = 25,
-    permission_mode: str = "acceptEdits",
+    permission_mode: str = "bypassPermissions",
     slot_label: str | None = None,
     mcp_config_path: str | None = None,
     terminal: bool = False,
