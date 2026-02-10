@@ -304,6 +304,130 @@ class TestAgentQueries:
         assert output is None
 
 
+class TestDelegateTask:
+    @patch("work_orchestrator.core.agents.subprocess.Popen")
+    def test_delegate_auto_picks_slot(self, mock_popen, db_with_slots, git_repo):
+        _, tmp = git_repo
+        db = db_with_slots
+        task = tasks_mod.create_task(db, "Delegate test", "test")
+
+        mock_proc = MagicMock()
+        mock_proc.pid = 44444
+        mock_popen.return_value = mock_proc
+
+        run = agents_mod.delegate_task(
+            db, task.id, "Do the work",
+            output_dir=str(Path(tmp) / "outputs"),
+            model="sonnet",
+            max_turns=10,
+        )
+        assert run.pid == 44444
+        assert run.status == "running"
+
+        # Task should be assigned to a slot and in-progress
+        updated_task = tasks_mod.get_task(db, task.id)
+        assert updated_task.status == "in-progress"
+        assert updated_task.worktree_path is not None
+
+    @patch("work_orchestrator.core.agents.subprocess.Popen")
+    def test_delegate_specific_slot(self, mock_popen, db_with_slots, git_repo):
+        _, tmp = git_repo
+        db = db_with_slots
+        task = tasks_mod.create_task(db, "Specific slot", "test")
+
+        mock_proc = MagicMock()
+        mock_proc.pid = 33333
+        mock_popen.return_value = mock_proc
+
+        run = agents_mod.delegate_task(
+            db, task.id, "Work on alpha",
+            output_dir=str(Path(tmp) / "outputs"),
+            slot_label="wt-alpha",
+        )
+        assert run.pid == 33333
+
+        slot = agents_mod.get_slot_by_label(db, "test", "wt-alpha")
+        assert slot.status == "occupied"
+        assert slot.current_task_id == task.id
+
+    def test_delegate_no_slots_available(self, db_with_slots, git_repo):
+        _, tmp = git_repo
+        db = db_with_slots
+        # Occupy all slots
+        slots = agents_mod.list_worktree_slots(db, "test")
+        for i, slot in enumerate(slots):
+            t = tasks_mod.create_task(db, f"Filler {i}", "test")
+            agents_mod.assign_task_to_slot(db, t.id, slot.id)
+
+        # Now try to delegate a new task
+        task = tasks_mod.create_task(db, "No slots left", "test")
+        with pytest.raises(ValueError, match="No available worktree slots"):
+            agents_mod.delegate_task(
+                db, task.id, "Do something",
+                output_dir=str(Path(tmp) / "outputs"),
+            )
+
+    @patch("work_orchestrator.core.agents.subprocess.Popen")
+    def test_delegate_already_running_fails(self, mock_popen, db_with_slots, git_repo):
+        _, tmp = git_repo
+        db = db_with_slots
+        task = tasks_mod.create_task(db, "Double delegate", "test")
+
+        mock_proc = MagicMock()
+        mock_proc.pid = 22222
+        mock_popen.return_value = mock_proc
+
+        agents_mod.delegate_task(
+            db, task.id, "First run",
+            output_dir=str(Path(tmp) / "outputs"),
+        )
+        with pytest.raises(ValueError, match="already has a running agent"):
+            agents_mod.delegate_task(
+                db, task.id, "Second run",
+                output_dir=str(Path(tmp) / "outputs"),
+            )
+
+    def test_delegate_nonexistent_task(self, db_with_slots, git_repo):
+        _, tmp = git_repo
+        db = db_with_slots
+        with pytest.raises(ValueError, match="Task not found"):
+            agents_mod.delegate_task(
+                db, "nonexistent", "instructions",
+                output_dir=str(Path(tmp) / "outputs"),
+            )
+
+
+class TestLaunchWithMaxTurns:
+    @patch("work_orchestrator.core.agents.subprocess.Popen")
+    def test_max_turns_and_mcp_config_passed(self, mock_popen, db_with_slots, git_repo):
+        _, tmp = git_repo
+        db = db_with_slots
+        slots = agents_mod.list_worktree_slots(db, "test")
+        task = tasks_mod.create_task(db, "Max turns test", "test")
+        agents_mod.assign_task_to_slot(db, task.id, slots[0].id)
+
+        mock_proc = MagicMock()
+        mock_proc.pid = 88888
+        mock_popen.return_value = mock_proc
+
+        run = agents_mod.launch_agent(
+            db, task.id, "Do multi-step work",
+            output_dir=str(Path(tmp) / "outputs"),
+            model="sonnet",
+            max_turns=30,
+            mcp_config_path="/path/to/.mcp.json",
+        )
+        assert run.pid == 88888
+
+        # Verify the command includes --max-turns and --mcp-config
+        call_args = mock_popen.call_args
+        cmd = call_args[0][0]
+        assert "--max-turns" in cmd
+        assert "30" in cmd
+        assert "--mcp-config" in cmd
+        assert "/path/to/.mcp.json" in cmd
+
+
 class TestReviewStatus:
     def test_review_status_accepted(self, db, git_repo):
         """Test that 'review' is a valid task status."""

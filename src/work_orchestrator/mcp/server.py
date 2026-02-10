@@ -567,7 +567,8 @@ def launch_agent(
 ) -> dict:
     """Launch a Claude CLI sub-agent to work on a task autonomously.
     The task must be assigned to a worktree slot first.
-    The agent runs in the background; use agent_status to check progress."""
+    The agent runs in the background; use agent_status to check progress.
+    Prefer using delegate_task instead — it handles slot assignment automatically."""
     app = _ctx(ctx)
     config = _cfg(ctx)
     m = model or config.agent_default_model
@@ -578,6 +579,59 @@ def launch_agent(
             output_dir=config.agent_output_dir,
             model=m,
             max_budget=b,
+        )
+        return _agent_run_to_dict(run)
+    except ValueError as e:
+        return {"error": str(e)}
+
+
+@mcp.tool()
+def delegate_task(
+    ctx: Context,
+    task_id: str,
+    instructions: str,
+    model: str | None = None,
+    max_budget: float | None = None,
+    max_turns: int | None = None,
+    slot_label: str | None = None,
+    project: str | None = None,
+    terminal: bool = True,
+) -> dict:
+    """Delegate a task to a Claude sub-agent in one step.
+
+    Automatically picks an available worktree slot (or use slot_label to pick one),
+    assigns the task, and launches a Claude agent with MCP access to work-orchestrator tools.
+
+    By default, opens the agent in a new Terminal window so you can watch it work.
+    Use agent_status to check progress, or wait for completion notification.
+
+    Args:
+        task_id: The task to delegate
+        instructions: What the agent should do (be specific and detailed)
+        model: Model to use (default: config default, usually "sonnet")
+        max_budget: Max spend in USD (default: config default)
+        max_turns: Max tool-use turns (default: 25). Higher for complex tasks.
+        slot_label: Specific worktree slot label (auto-picks if omitted)
+        project: Project ID (auto-detected from task if omitted)
+        terminal: Open in a Terminal window (default: true). Set false for background.
+    """
+    app = _ctx(ctx)
+    config = _cfg(ctx)
+    m = model or config.agent_default_model
+    b = max_budget or config.agent_default_budget
+    t = max_turns or config.agent_default_max_turns
+    try:
+        run = agents_mod.delegate_task(
+            app.db,
+            task_id=task_id,
+            instructions=instructions,
+            output_dir=config.agent_output_dir,
+            project_id=project,
+            model=m,
+            max_budget=b,
+            max_turns=t,
+            slot_label=slot_label,
+            terminal=terminal,
         )
         return _agent_run_to_dict(run)
     except ValueError as e:
