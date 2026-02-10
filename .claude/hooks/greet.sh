@@ -7,10 +7,20 @@ echo "[$(date)] greet.sh fired" >> /tmp/wo-hook-debug.log
 
 cd "$CLAUDE_PROJECT_DIR" 2>/dev/null || cd "$(dirname "$0")/../.."
 
-# Gather task summary
-TASKS=$(uv run wo task list 2>/dev/null)
+# Gather tasks across all projects
+PROJECTS=$(sqlite3 ~/.work_orchestrator/wo.db "SELECT id FROM projects;" 2>/dev/null)
+TASKS=""
+for proj in $PROJECTS; do
+    PROJ_TASKS=$(uv run wo task list --project "$proj" 2>/dev/null)
+    if [ -n "$PROJ_TASKS" ] && ! echo "$PROJ_TASKS" | grep -q "No tasks found"; then
+        TASKS="$TASKS
+[$proj]
+$PROJ_TASKS
+"
+    fi
+done
 if [ -z "$TASKS" ]; then
-    TASKS="(no tasks found)"
+    TASKS="(no tasks found across any project)"
 fi
 
 cat <<EOF
