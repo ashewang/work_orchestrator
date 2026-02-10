@@ -3,10 +3,12 @@
 import json
 import logging
 import os
+import shlex
 import signal
 import sqlite3
 import subprocess
 import threading
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -210,6 +212,86 @@ def release_slot(db: sqlite3.Connection, slot_id: int) -> WorktreeSlot:
     return get_worktree_slot(db, slot_id)
 
 
+# ── One-Step Delegation ─────────────────────────────────────────────────────
+
+
+def delegate_task(
+    db: sqlite3.Connection,
+    task_id: str,
+    instructions: str,
+    output_dir: str,
+    project_id: str | None = None,
+    model: str = "sonnet",
+    max_budget: float | None = None,
+    max_turns: int = 25,
+    permission_mode: str = "bypassPermissions",
+    slot_label: str | None = None,
+    mcp_config_path: str | None = None,
+    terminal: bool = False,
+) -> AgentRun:
+    """One-step delegation: auto-pick available slot, assign task, launch agent.
+
+    If slot_label is provided, uses that specific slot.
+    Otherwise, auto-picks the first available slot for the task's project.
+    """
+    task = get_task(db, task_id)
+    if not task:
+        raise ValueError(f"Task not found: {task_id}")
+
+    pid = project_id or task.project_id
+
+    # Fail fast if agent already running
+    existing = db.execute(
+        "SELECT * FROM agent_runs WHERE task_id = ? AND status = 'running'",
+        (task_id,),
+    ).fetchone()
+    if existing:
+        raise ValueError(
+            f"Task '{task_id}' already has a running agent (PID {existing['pid']})"
+        )
+
+    # Select a slot
+    if slot_label:
+        slot = get_slot_by_label(db, pid, slot_label)
+        if not slot:
+            raise ValueError(f"Slot not found: '{slot_label}' in project '{pid}'")
+        if slot.status == "occupied":
+            raise ValueError(
+                f"Slot '{slot_label}' is already occupied by task {slot.current_task_id}"
+            )
+    else:
+        available = list_worktree_slots(db, pid, status="available")
+        if not available:
+            raise ValueError(
+                f"No available worktree slots for project '{pid}'. "
+                "Register worktrees first with register_worktrees or 'wo agent register'."
+            )
+        slot = available[0]
+
+    # Assign the task to the slot
+    assign_task_to_slot(db, task_id, slot.id)
+
+    # Auto-resolve MCP config path from project repo
+    if not mcp_config_path:
+        project = get_project(db, pid)
+        if project:
+            candidate = Path(project.repo_path) / ".mcp.json"
+            if candidate.exists():
+                mcp_config_path = str(candidate)
+
+    # Launch the agent
+    return launch_agent(
+        db, task_id, instructions,
+        output_dir=output_dir,
+        model=model,
+        max_budget=max_budget,
+        permission_mode=permission_mode,
+        max_turns=max_turns,
+        mcp_config_path=mcp_config_path,
+        terminal=terminal,
+    )
+
+
 # ── Prompt Construction ──────────────────────────────────────────────────────
 
 
@@ -258,6 +340,19 @@ def build_agent_prompt(
         pass
 
     parts.append(f"\n## Instructions\n{instructions}")
+
+    parts.append(
+        "\n## Work Orchestrator Integration\n"
+        "You have access to the work-orchestrator MCP tools. Use them to:\n"
+        f"- Update your task status: call `update_task_status` with task_id='{task.id}' "
+        "and status='in-progress' when you begin.\n"
+        "- Store important context: use `remember` to save decisions, blockers, or notes.\n"
+        "- Record your PR: use `update_task_pr_url` with the PR URL after creating one.\n"
+        "- Check dependencies: use `get_task` to inspect dependent tasks if needed.\n"
+        "\n"
+        "Do NOT call `launch_agent` or `delegate_task` — you are a subagent, not an orchestrator."
+    )
+
     parts.append(
         "\n## Completion\n"
         "When you are finished, provide a brief summary of what was accomplished, "
@@ -280,10 +375,14 @@ def launch_agent(
     model: str = "sonnet",
     max_budget: float | None = None,
     permission_mode: str = "acceptEdits",
+    max_turns: int | None = None,
+    mcp_config_path: str | None = None,
+    terminal: bool = False,
 ) -> AgentRun:
     """Launch a Claude CLI sub-agent for a task.
 
     The task must be assigned to a worktree slot.
+    If terminal=True, opens the agent in a new Terminal window so you can watch it.
     """
     task = get_task(db, task_id)
     if not task:
@@ -319,26 +418,46 @@ def launch_agent(
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     output_file = str(out_path / f"agent-{task_id}-{timestamp}.json")
 
-    # Build command
-    cmd = ["claude", "-p", prompt, "--output-format", "json"]
+    # Build command parts (shared between terminal and background modes)
+    cmd_parts = ["claude", "-p", shlex.quote(prompt)]
     if model:
-        cmd += ["--model", model]
+        cmd_parts += ["--model", model]
     if max_budget:
-        cmd += ["--max-budget-usd", str(max_budget)]
+        cmd_parts += ["--max-budget-usd", str(max_budget)]
     if permission_mode:
-        cmd += ["--permission-mode", permission_mode]
+        cmd_parts += ["--permission-mode", permission_mode]
+    if max_turns:
+        cmd_parts += ["--max-turns", str(max_turns)]
+    if mcp_config_path:
+        cmd_parts += ["--mcp-config", shlex.quote(mcp_config_path)]
 
-    # Launch subprocess
-    with open(output_file, "w") as f:
-        proc = subprocess.Popen(
-            cmd,
-            cwd=slot.path,
-            stdout=f,
-            stderr=subprocess.STDOUT,
+    if terminal:
+        pid = _launch_in_terminal(
+            cmd_parts, slot.path, output_file, task_id, out_path, timestamp
         )
+    else:
+        # Background mode: unquote args for direct Popen
+        cmd = ["claude", "-p", prompt, "--output-format", "json"]
+        if model:
+            cmd += ["--model", model]
+        if max_budget:
+            cmd += ["--max-budget-usd", str(max_budget)]
+        if permission_mode:
+            cmd += ["--permission-mode", permission_mode]
+        if max_turns:
+            cmd += ["--max-turns", str(max_turns)]
+        if mcp_config_path:
+            cmd += ["--mcp-config", mcp_config_path]
 
-    # Track the Popen object
-    _active_processes[proc.pid] = proc
+        with open(output_file, "w") as f:
+            proc = subprocess.Popen(
+                cmd,
+                cwd=slot.path,
+                stdout=f,
+                stderr=subprocess.STDOUT,
+            )
+        _active_processes[proc.pid] = proc
+        pid = proc.pid
 
     # Update task status
     if task.status == "todo":
@@ -349,16 +468,66 @@ def launch_agent(
         """INSERT INTO agent_runs
            (task_id, worktree_slot_id, pid, status, instructions, model, max_budget, output_file)
            VALUES (?, ?, ?, 'running', ?, ?, ?, ?)""",
-        (task_id, slot.id, proc.pid, instructions, model, max_budget, output_file),
+        (task_id, slot.id, pid, instructions, model, max_budget, output_file),
     )
-    _log_event(db, task_id, "agent_launched", None, f"PID {proc.pid}")
+    _log_event(db, task_id, "agent_launched", None, f"PID {pid}")
     db.commit()
 
     run_row = db.execute(
         "SELECT * FROM agent_runs WHERE pid = ? AND status = 'running'",
-        (proc.pid,),
+        (pid,),
     ).fetchone()
     return _row_to_agent_run(run_row)
+
+
+def _launch_in_terminal(
+    cmd_parts: list[str],
+    cwd: str,
+    output_file: str,
+    task_id: str,
+    out_path: Path,
+    timestamp: str,
+) -> int:
+    """Launch the agent in a visible Terminal window. Returns the PID."""
+    pid_file = str(out_path / f"agent-{task_id}-{timestamp}.pid")
+    script_file = str(out_path / f"agent-{task_id}-{timestamp}.sh")
+
+    # Build the launcher script
+    # Uses tee so output is visible in terminal AND captured to file
+    claude_cmd = " ".join(cmd_parts)
+    script = (
+        "#!/bin/bash\n"
+        f"cd {shlex.quote(cwd)}\n"
+        f"echo $$ > {shlex.quote(pid_file)}\n"
+        f"echo '=== Agent started for task: {task_id} ==='\n"
+        f"echo '=== Working in: {cwd} ==='\n"
+        f"echo ''\n"
+        f"{claude_cmd} 2>&1 | tee {shlex.quote(output_file)}\n"
+        f"EXIT_CODE=${{PIPESTATUS[0]}}\n"
+        f"echo ''\n"
+        f"echo '=== Agent finished (exit code: '$EXIT_CODE') ==='\n"
+        f"echo 'Press Enter to close...'\n"
+        f"read\n"
+    )
+
+    Path(script_file).write_text(script)
+    Path(script_file).chmod(0o755)
+
+    # Open in Terminal.app
+    subprocess.Popen(["open", "-a", "Terminal", script_file])
+
+    # Wait for the PID file to appear (the script writes it on startup)
+    for _ in range(50):
+        if Path(pid_file).exists():
+            try:
+                return int(Path(pid_file).read_text().strip())
+            except (ValueError, OSError):
+                pass
+        time.sleep(0.1)
+
+    # Fallback: return 0 if PID file never appeared
+    logger.warning("Could not read PID file for terminal agent %s", task_id)
+    return 0
 
 
 # ── Agent Queries ────────────────────────────────────────────────────────────

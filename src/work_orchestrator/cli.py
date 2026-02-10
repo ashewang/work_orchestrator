@@ -50,6 +50,48 @@ def init_project(project_name, repo_path, branch, slack_channel):
         click.echo(f"  Branch: {project.default_branch}")
 
 
+@main.command("projects")
+def list_projects():
+    """List all projects."""
+    with _get_db() as db:
+        projects = projects_mod.list_projects(db)
+        if not projects:
+            click.echo("No projects found.")
+            return
+        for p in projects:
+            click.echo(p.id)
+
+
+# ── Profile Commands ──────────────────────────────────────────────────────────
+
+
+@main.command("setup")
+@click.option("--name", prompt="Your name", help="Your name")
+@click.option("--language", prompt="Preferred language", default="", help="Communication language (e.g. English, 中文)")
+@click.option("--vibe", prompt="Vibe", default="", help="How you like interactions (e.g. chill, hype, professional)")
+def setup_profile(name, language, vibe):
+    """Set up your personal profile."""
+    with _get_db() as db:
+        memory_mod.remember(db, "user_name", name, category="profile")
+        if language:
+            memory_mod.remember(db, "preferred_language", language, category="profile")
+        if vibe:
+            memory_mod.remember(db, "vibe", vibe, category="profile")
+        click.echo(f"Welcome, {name}! Profile saved.")
+
+
+@main.command("profile")
+def show_profile():
+    """Show your personal profile."""
+    with _get_db() as db:
+        mems = memory_mod.list_memories(db, category="profile")
+        if not mems:
+            click.echo("No profile set up. Run: wo setup")
+            return
+        for m in mems:
+            click.echo(f"{m.key}={m.value}")
+
+
 # ── Task Commands ─────────────────────────────────────────────────────────────
 
 
@@ -474,13 +516,31 @@ def agent_assign(task_id, slot_label, project):
             sys.exit(1)
 
 
+@agent_group.command("release")
+@click.argument("slot_label")
+@click.option("--project", default="default", help="Project ID")
+def agent_release(slot_label, project):
+    """Release a worktree slot, making it available for new tasks."""
+    with _get_db() as db:
+        slot = agents_mod.get_slot_by_label(db, project, slot_label)
+        if not slot:
+            click.echo(f"Slot not found: {slot_label}", err=True)
+            sys.exit(1)
+        try:
+            updated = agents_mod.release_slot(db, slot.id)
+            click.echo(f"Released slot '{updated.label}' ({updated.path})")
+        except ValueError as e:
+            click.echo(f"Error: {e}", err=True)
+            sys.exit(1)
+
+
 @agent_group.command("launch")
 @click.argument("task_id")
 @click.argument("instructions")
 @click.option("--model", default=None, help="Model: sonnet or opus")
 @click.option("--max-budget", type=float, default=None, help="Max budget in USD")
 def agent_launch(task_id, instructions, model, max_budget):
-    """Launch a Claude sub-agent for a task."""
+    """Launch a Claude sub-agent for a task (must be assigned to a slot first)."""
     config = get_config()
     with _get_db() as db:
         m = model or config.agent_default_model
@@ -494,6 +554,44 @@ def agent_launch(task_id, instructions, model, max_budget):
             click.echo(f"Agent launched for task '{task_id}'")
             click.echo(f"  PID: {run.pid}")
             click.echo(f"  Model: {run.model}")
+            click.echo(f"  Output: {run.output_file}")
+        except ValueError as e:
+            click.echo(f"Error: {e}", err=True)
+            sys.exit(1)
+
+
+@agent_group.command("delegate")
+@click.argument("task_id")
+@click.argument("instructions")
+@click.option("--model", default=None, help="Model: sonnet or opus")
+@click.option("--max-budget", type=float, default=None, help="Max budget in USD")
+@click.option("--max-turns", type=int, default=None, help="Max tool-use turns (default 25)")
+@click.option("--slot", default=None, help="Specific worktree slot label")
+@click.option("--project", default=None, help="Project ID (auto-detected from task)")
+@click.option("--terminal/--background", default=True, help="Open in Terminal window (default) or run in background")
+def agent_delegate(task_id, instructions, model, max_budget, max_turns, slot, project, terminal):
+    """Delegate a task to a Claude sub-agent (auto-picks slot, assigns, launches)."""
+    config = get_config()
+    with _get_db() as db:
+        m = model or config.agent_default_model
+        b = max_budget or config.agent_default_budget
+        t = max_turns or config.agent_default_max_turns
+        try:
+            run = agents_mod.delegate_task(
+                db, task_id, instructions,
+                output_dir=config.agent_output_dir,
+                project_id=project,
+                model=m,
+                max_budget=b,
+                max_turns=t,
+                slot_label=slot,
+                terminal=terminal,
+            )
+            mode = "Terminal window" if terminal else "background"
+            click.echo(f"Task '{task_id}' delegated to {mode}!")
+            click.echo(f"  PID: {run.pid}")
+            click.echo(f"  Model: {run.model}")
+            click.echo(f"  Max turns: {t}")
             click.echo(f"  Output: {run.output_file}")
         except ValueError as e:
             click.echo(f"Error: {e}", err=True)

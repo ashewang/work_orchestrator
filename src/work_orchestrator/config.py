@@ -14,6 +14,7 @@ class Config:
     agent_output_dir: str = ".agent_outputs"
     agent_default_model: str = "sonnet"
     agent_default_budget: float | None = None
+    agent_default_max_turns: int = 25
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -38,6 +39,9 @@ class Config:
 
         if budget := os.environ.get("WO_AGENT_DEFAULT_BUDGET"):
             config.agent_default_budget = float(budget)
+
+        if turns := os.environ.get("WO_AGENT_DEFAULT_MAX_TURNS"):
+            config.agent_default_max_turns = int(turns)
 
         return config
 
