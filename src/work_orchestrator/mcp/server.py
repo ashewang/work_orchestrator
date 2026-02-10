@@ -639,6 +639,23 @@ def delegate_task(
 
 
 @mcp.tool()
+def release_slot(ctx: Context, slot_label: str, project: str = "default") -> dict:
+    """Release a worktree slot, making it available for new tasks.
+
+    Use this after an agent finishes or a task no longer needs the slot.
+    """
+    app = _ctx(ctx)
+    slot = agents_mod.get_slot_by_label(app.db, project, slot_label)
+    if not slot:
+        return {"error": f"Slot not found: '{slot_label}' in project '{project}'"}
+    try:
+        updated = agents_mod.release_slot(app.db, slot.id)
+        return _slot_to_dict(updated)
+    except ValueError as e:
+        return {"error": str(e)}
+
+
+@mcp.tool()
 def agent_status(ctx: Context, task_id: str) -> dict:
     """Check the status of the latest agent run for a task."""
     app = _ctx(ctx)

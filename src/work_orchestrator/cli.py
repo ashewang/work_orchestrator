@@ -516,6 +516,24 @@ def agent_assign(task_id, slot_label, project):
             sys.exit(1)
 
 
+@agent_group.command("release")
+@click.argument("slot_label")
+@click.option("--project", default="default", help="Project ID")
+def agent_release(slot_label, project):
+    """Release a worktree slot, making it available for new tasks."""
+    with _get_db() as db:
+        slot = agents_mod.get_slot_by_label(db, project, slot_label)
+        if not slot:
+            click.echo(f"Slot not found: {slot_label}", err=True)
+            sys.exit(1)
+        try:
+            updated = agents_mod.release_slot(db, slot.id)
+            click.echo(f"Released slot '{updated.label}' ({updated.path})")
+        except ValueError as e:
+            click.echo(f"Error: {e}", err=True)
+            sys.exit(1)
+
+
 @agent_group.command("launch")
 @click.argument("task_id")
 @click.argument("instructions")
