@@ -569,8 +569,9 @@ def agent_launch(task_id, instructions, model, max_budget):
 @click.option("--slot", default=None, help="Specific worktree slot label")
 @click.option("--project", default=None, help="Project ID (auto-detected from task)")
 @click.option("--terminal/--background", default=True, help="Open in Terminal window (default) or run in background")
-def agent_delegate(task_id, instructions, model, max_budget, max_turns, slot, project, terminal):
-    """Delegate a task to a Claude sub-agent (auto-picks slot, assigns, launches)."""
+@click.option("--agent", "backend", default=None, help="Agent backend: claude-code, opencode, or pi")
+def agent_delegate(task_id, instructions, model, max_budget, max_turns, slot, project, terminal, backend):
+    """Delegate a task to a sub-agent (auto-picks slot, assigns, launches)."""
     config = get_config()
     with _get_db() as db:
         m = model or config.agent_default_model
@@ -586,9 +587,11 @@ def agent_delegate(task_id, instructions, model, max_budget, max_turns, slot, pr
                 max_turns=t,
                 slot_label=slot,
                 terminal=terminal,
+                backend=backend or config.default_backend,
             )
             mode = "Terminal window" if terminal else "background"
             click.echo(f"Task '{task_id}' delegated to {mode}!")
+            click.echo(f"  Backend: {run.backend}")
             click.echo(f"  PID: {run.pid}")
             click.echo(f"  Model: {run.model}")
             click.echo(f"  Max turns: {t}")
@@ -657,6 +660,226 @@ def agent_output(task_id):
             click.echo(f"No output found for task: {task_id}", err=True)
             sys.exit(1)
         click.echo(output)
+
+
+# ── Planning Commands ───────────────────────────────────────────────────────
+
+
+@main.group("plan")
+def plan_group():
+    """CCPM-style planning: brainstorm → PRD → tasks."""
+    pass
+
+
+@plan_group.command("start")
+@click.argument("project")
+@click.option("--title", "-t", default="", help="Planning session title")
+@click.option("--model", default="claude-sonnet-4-20250514", help="Model for planning")
+def plan_start(project, title, model):
+    """Start an interactive planning session (brainstorm → PRD → tasks)."""
+    from work_orchestrator.core import planner
+
+    with _get_db() as db:
+        proj = projects_mod.get_project(db, project)
+        if not proj:
+            click.echo(f"Project not found: {project}", err=True)
+            sys.exit(1)
+
+        session = planner.create_session(db, title or f"Planning for {project}", project_id=project)
+        click.echo(f"Planning session started: {session.id}")
+        click.echo(f"Project: {project} | Phase: brainstorm")
+        click.echo("Type your ideas. Type '/prd' to generate PRD, '/decompose' to break into tasks, '/approve' to create tasks.")
+        click.echo("Type '/quit' to exit.\n")
+
+        while True:
+            try:
+                user_input = click.prompt("You", prompt_suffix="> ")
+            except (EOFError, click.Abort):
+                break
+
+            if user_input.strip() == "/quit":
+                click.echo("Session saved. Resume with: wo plan resume " + session.id)
+                break
+
+            if user_input.strip() == "/prd":
+                click.echo("\nGenerating PRD...\n")
+                try:
+                    prd = planner.generate_prd(db, session.id, model=model)
+                    click.echo(prd)
+                    click.echo(f"\nPRD saved. Phase: prd")
+                    click.echo("Review it, then type '/decompose' to break into tasks.\n")
+                except Exception as e:
+                    click.echo(f"Error generating PRD: {e}", err=True)
+                continue
+
+            if user_input.strip() == "/decompose":
+                click.echo("\nDecomposing PRD into tasks...\n")
+                try:
+                    tasks = planner.decompose_prd(db, session.id, model=model)
+                    click.echo(f"Generated {len(tasks)} tasks:\n")
+                    for i, t in enumerate(tasks):
+                        deps = f" [depends: {', '.join(t.get('depends_on', []))}]" if t.get("depends_on") else ""
+                        click.echo(f"  {i+1}. P{t.get('priority', 3)} {t['title']}{deps}")
+                    click.echo(f"\nType '/approve' to create these tasks in the DB.\n")
+                    # Store tasks on the session object for approval
+                    _pending_tasks[session.id] = tasks
+                except Exception as e:
+                    click.echo(f"Error decomposing: {e}", err=True)
+                continue
+
+            if user_input.strip() == "/approve":
+                pending = _pending_tasks.get(session.id)
+                if not pending:
+                    click.echo("No pending tasks to approve. Run /decompose first.", err=True)
+                    continue
+                created = planner.approve_plan(db, session.id, pending)
+                click.echo(f"\nCreated {len(created)} tasks:")
+                for t in created:
+                    click.echo(f"  - {t.id}: {t.title} (P{t.priority})")
+                del _pending_tasks[session.id]
+                click.echo("\nPlanning complete!")
+                break
+
+            # Regular brainstorm message
+            try:
+                click.echo()
+                for chunk in planner.plan_message_stream(db, session.id, user_input, model=model):
+                    click.echo(chunk, nl=False)
+                click.echo("\n")
+            except Exception as e:
+                click.echo(f"Error: {e}", err=True)
+
+
+# Module-level store for pending decomposed tasks (CLI only)
+_pending_tasks: dict[str, list[dict]] = {}
+
+
+@plan_group.command("list")
+@click.option("--project", default=None, help="Filter by project")
+def plan_list(project):
+    """List planning sessions."""
+    from work_orchestrator.core import planner
+
+    with _get_db() as db:
+        sessions = planner.list_sessions(db, project_id=project)
+        if not sessions:
+            click.echo("No planning sessions found.")
+            return
+        for s in sessions:
+            click.echo(f"  [{s.phase}] {s.id}: {s.title} (project: {s.project_id})")
+
+
+@plan_group.command("show")
+@click.argument("session_id")
+def plan_show(session_id):
+    """Show a planning session's conversation and PRD."""
+    from work_orchestrator.core import planner
+
+    with _get_db() as db:
+        session = planner.get_session(db, session_id)
+        if not session:
+            click.echo(f"Session not found: {session_id}", err=True)
+            sys.exit(1)
+
+        click.echo(f"Session: {session.id}")
+        click.echo(f"  Project: {session.project_id}")
+        click.echo(f"  Title: {session.title}")
+        click.echo(f"  Phase: {session.phase}")
+
+        if session.prd_content:
+            click.echo(f"\n--- PRD ---\n{session.prd_content}\n--- END PRD ---")
+
+        messages = planner.get_messages(db, session_id)
+        if messages:
+            click.echo(f"\nConversation ({len(messages)} messages):")
+            for m in messages:
+                prefix = {"user": "You", "assistant": "Claude", "system": "System"}.get(m.role, m.role)
+                content = m.content[:200] + "..." if len(m.content) > 200 else m.content
+                click.echo(f"  [{prefix}] {content}")
+
+
+@plan_group.command("resume")
+@click.argument("session_id")
+@click.option("--model", default="claude-sonnet-4-20250514", help="Model for planning")
+def plan_resume(session_id, model):
+    """Resume an incomplete planning session."""
+    from work_orchestrator.core import planner
+
+    with _get_db() as db:
+        session = planner.get_session(db, session_id)
+        if not session:
+            click.echo(f"Session not found: {session_id}", err=True)
+            sys.exit(1)
+
+        click.echo(f"Resuming session: {session.id} (phase: {session.phase})")
+        click.echo(f"Project: {session.project_id} | Title: {session.title}")
+        click.echo("Commands: /prd, /decompose, /approve, /quit\n")
+
+        # Show recent messages for context
+        messages = planner.get_messages(db, session_id)
+        if messages:
+            recent = messages[-3:]
+            click.echo("--- Recent context ---")
+            for m in recent:
+                prefix = {"user": "You", "assistant": "Claude", "system": "System"}.get(m.role, m.role)
+                content = m.content[:300] + "..." if len(m.content) > 300 else m.content
+                click.echo(f"[{prefix}] {content}")
+            click.echo("--- End context ---\n")
+
+        while True:
+            try:
+                user_input = click.prompt("You", prompt_suffix="> ")
+            except (EOFError, click.Abort):
+                break
+
+            if user_input.strip() == "/quit":
+                click.echo("Session saved.")
+                break
+
+            if user_input.strip() == "/prd":
+                click.echo("\nGenerating PRD...\n")
+                try:
+                    prd = planner.generate_prd(db, session.id, model=model)
+                    click.echo(prd)
+                    click.echo(f"\nPRD saved. Type '/decompose' to break into tasks.\n")
+                except Exception as e:
+                    click.echo(f"Error: {e}", err=True)
+                continue
+
+            if user_input.strip() == "/decompose":
+                click.echo("\nDecomposing...\n")
+                try:
+                    tasks = planner.decompose_prd(db, session.id, model=model)
+                    click.echo(f"Generated {len(tasks)} tasks:\n")
+                    for i, t in enumerate(tasks):
+                        deps = f" [depends: {', '.join(t.get('depends_on', []))}]" if t.get("depends_on") else ""
+                        click.echo(f"  {i+1}. P{t.get('priority', 3)} {t['title']}{deps}")
+                    click.echo(f"\nType '/approve' to create these tasks.\n")
+                    _pending_tasks[session.id] = tasks
+                except Exception as e:
+                    click.echo(f"Error: {e}", err=True)
+                continue
+
+            if user_input.strip() == "/approve":
+                pending = _pending_tasks.get(session.id)
+                if not pending:
+                    click.echo("No pending tasks. Run /decompose first.", err=True)
+                    continue
+                created = planner.approve_plan(db, session.id, pending)
+                click.echo(f"\nCreated {len(created)} tasks:")
+                for t in created:
+                    click.echo(f"  - {t.id}: {t.title} (P{t.priority})")
+                del _pending_tasks[session.id]
+                click.echo("\nPlanning complete!")
+                break
+
+            try:
+                click.echo()
+                for chunk in planner.plan_message_stream(db, session.id, user_input, model=model):
+                    click.echo(chunk, nl=False)
+                click.echo("\n")
+            except Exception as e:
+                click.echo(f"Error: {e}", err=True)
 
 
 # ── Dashboard Command ────────────────────────────────────────────────────────

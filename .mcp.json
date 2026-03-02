@@ -7,6 +7,14 @@
       "env": {
         "WO_DB_PATH": "${HOME}/.work_orchestrator/wo.db"
       }
+    },
+    "slack": {
+      "type": "stdio",
+      "command": "bash",
+      "args": ["-c", "set -a && source /Users/ashe/codebase/work_orchestrator/.env && exec npx -y slack-mcp-server"],
+      "env": {
+        "SLACK_MCP_TEAM_ID": "T02CA13DL0M"
+      }
     }
   }
 }

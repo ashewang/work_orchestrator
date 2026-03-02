@@ -84,6 +84,24 @@ CREATE TABLE IF NOT EXISTS agent_runs (
     started_at TEXT DEFAULT (datetime('now')),
     completed_at TEXT
 );
+
+CREATE TABLE IF NOT EXISTS planning_sessions (
+    id TEXT PRIMARY KEY,
+    project_id TEXT REFERENCES projects(id),
+    title TEXT,
+    phase TEXT DEFAULT 'brainstorm' CHECK (phase IN ('brainstorm', 'prd', 'decompose', 'approved', 'cancelled')),
+    prd_content TEXT,
+    created_at TEXT DEFAULT (datetime('now')),
+    updated_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS planning_messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL REFERENCES planning_sessions(id) ON DELETE CASCADE,
+    role TEXT NOT NULL CHECK (role IN ('user', 'assistant', 'system')),
+    content TEXT NOT NULL,
+    created_at TEXT DEFAULT (datetime('now'))
+);
 """
 
 FTS_SCHEMA = """
@@ -115,6 +133,10 @@ def _run_migrations(conn: sqlite3.Connection):
     migrations = [
         "ALTER TABLE tasks ADD COLUMN pr_url TEXT",
         "ALTER TABLE tasks ADD COLUMN priority INTEGER DEFAULT 3",
+        # Multi-backend support
+        "ALTER TABLE projects ADD COLUMN agent_backend TEXT",
+        "ALTER TABLE tasks ADD COLUMN agent_backend TEXT",
+        "ALTER TABLE agent_runs ADD COLUMN backend TEXT DEFAULT 'claude-code'",
     ]
     for sql in migrations:
         try:
@@ -134,6 +156,22 @@ def _run_migrations(conn: sqlite3.Connection):
         conn.execute("PRAGMA writable_schema=ON")
         conn.execute(
             "UPDATE sqlite_master SET sql=? WHERE name='tasks' AND type='table'",
+            (new_sql,),
+        )
+        conn.execute("PRAGMA writable_schema=OFF")
+
+    # Migrate worktree_slots CHECK constraint to include 'draining'
+    slot_sql = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE name='worktree_slots' AND type='table'"
+    ).fetchone()
+    if slot_sql and "'draining'" not in slot_sql[0]:
+        new_sql = slot_sql[0].replace(
+            "('available', 'occupied')",
+            "('available', 'occupied', 'draining')",
+        )
+        conn.execute("PRAGMA writable_schema=ON")
+        conn.execute(
+            "UPDATE sqlite_master SET sql=? WHERE name='worktree_slots' AND type='table'",
             (new_sql,),
         )
         conn.execute("PRAGMA writable_schema=OFF")

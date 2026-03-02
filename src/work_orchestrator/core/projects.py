@@ -44,7 +44,7 @@ def update_project(
     **kwargs,
 ) -> Project | None:
     """Update project fields."""
-    allowed = {"name", "repo_path", "default_branch", "slack_channel"}
+    allowed = {"name", "repo_path", "default_branch", "slack_channel", "agent_backend"}
     updates = {k: v for k, v in kwargs.items() if k in allowed and v is not None}
     if not updates:
         return get_project(db, project_id)
@@ -68,12 +68,18 @@ def ensure_default_project(db: sqlite3.Connection, repo_path: str) -> Project:
 
 
 def _row_to_project(row: sqlite3.Row) -> Project:
+    # agent_backend column added in migration; handle older DBs gracefully
+    try:
+        agent_backend = row["agent_backend"]
+    except (IndexError, KeyError):
+        agent_backend = None
     return Project(
         id=row["id"],
         name=row["name"],
         repo_path=row["repo_path"],
         default_branch=row["default_branch"],
         slack_channel=row["slack_channel"],
+        agent_backend=agent_backend,
         created_at=_parse_dt(row["created_at"]),
         updated_at=_parse_dt(row["updated_at"]),
     )
