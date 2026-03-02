@@ -500,6 +500,10 @@ def launch_agent(
             f"Task '{task_id}' already has a running agent (PID {existing['pid']})"
         )
 
+    # Ensure the worktree has permissive Claude Code settings so the agent
+    # can commit, push, and create PRs without permission prompts.
+    _write_agent_settings(slot.path)
+
     # Resolve backend
     backend_name = backend or "claude-code"
     agent_backend = get_backend(backend_name)
@@ -570,6 +574,43 @@ def launch_agent(
         (pid,),
     ).fetchone()
     return _row_to_agent_run(run_row)
+
+
+def _write_agent_settings(worktree_path: str) -> None:
+    """Write a permissive .claude/settings.local.json into the worktree.
+
+    This grants the sub-agent permission to run git, gh, and common build tools
+    without being blocked by Claude Code's permission system.
+    """
+    settings = {
+        "permissions": {
+            "allow": [
+                "Bash(git:*)",
+                "Bash(gh:*)",
+                "Bash(uv:*)",
+                "Bash(npm:*)",
+                "Bash(npx:*)",
+                "Bash(pnpm:*)",
+                "Bash(yarn:*)",
+                "Bash(make:*)",
+                "Bash(cargo:*)",
+            ]
+        }
+    }
+    settings_dir = Path(worktree_path) / ".claude"
+    settings_dir.mkdir(parents=True, exist_ok=True)
+    settings_file = settings_dir / "settings.local.json"
+    # Merge with existing settings if present
+    if settings_file.exists():
+        try:
+            existing = json.loads(settings_file.read_text())
+            existing_allow = existing.get("permissions", {}).get("allow", [])
+            merged_allow = list(dict.fromkeys(existing_allow + settings["permissions"]["allow"]))
+            existing.setdefault("permissions", {})["allow"] = merged_allow
+            settings = existing
+        except (json.JSONDecodeError, KeyError):
+            pass
+    settings_file.write_text(json.dumps(settings, indent=2) + "\n")
 
 
 def _launch_in_terminal(
