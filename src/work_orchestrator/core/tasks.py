@@ -335,6 +335,11 @@ def remove_dependency(
 
 
 def _row_to_task(row: sqlite3.Row) -> Task:
+    # agent_backend column added in migration; handle older DBs gracefully
+    try:
+        agent_backend = row["agent_backend"]
+    except (IndexError, KeyError):
+        agent_backend = None
     return Task(
         id=row["id"],
         project_id=row["project_id"],
@@ -346,6 +351,7 @@ def _row_to_task(row: sqlite3.Row) -> Task:
         branch_name=row["branch_name"],
         worktree_path=row["worktree_path"],
         pr_url=row["pr_url"],
+        agent_backend=agent_backend,
         created_at=_parse_dt(row["created_at"]),
         updated_at=_parse_dt(row["updated_at"]),
         completed_at=_parse_dt(row["completed_at"]),

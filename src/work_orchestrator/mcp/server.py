@@ -503,6 +503,7 @@ def _agent_run_to_dict(run) -> dict:
         "pid": run.pid,
         "status": run.status,
         "model": run.model,
+        "backend": run.backend,
         "started_at": run.started_at.isoformat() if run.started_at else None,
     }
     if run.max_budget:
@@ -564,11 +565,16 @@ def launch_agent(
     instructions: str,
     model: str | None = None,
     max_budget: float | None = None,
+    backend: str | None = None,
 ) -> dict:
-    """Launch a Claude CLI sub-agent to work on a task autonomously.
+    """Launch an agent sub-process to work on a task autonomously.
     The task must be assigned to a worktree slot first.
     The agent runs in the background; use agent_status to check progress.
-    Prefer using delegate_task instead — it handles slot assignment automatically."""
+    Prefer using delegate_task instead — it handles slot assignment automatically.
+
+    Args:
+        backend: Agent backend to use (claude-code, opencode, pi). Default: project/config default.
+    """
     app = _ctx(ctx)
     config = _cfg(ctx)
     m = model or config.agent_default_model
@@ -579,6 +585,7 @@ def launch_agent(
             output_dir=config.agent_output_dir,
             model=m,
             max_budget=b,
+            backend=backend or config.default_backend,
         )
         return _agent_run_to_dict(run)
     except ValueError as e:
@@ -596,11 +603,12 @@ def delegate_task(
     slot_label: str | None = None,
     project: str | None = None,
     terminal: bool = True,
+    backend: str | None = None,
 ) -> dict:
-    """Delegate a task to a Claude sub-agent in one step.
+    """Delegate a task to a sub-agent in one step.
 
     Automatically picks an available worktree slot (or use slot_label to pick one),
-    assigns the task, and launches a Claude agent with MCP access to work-orchestrator tools.
+    assigns the task, and launches an agent with MCP access to work-orchestrator tools.
 
     By default, opens the agent in a new Terminal window so you can watch it work.
     Use agent_status to check progress, or wait for completion notification.
@@ -614,6 +622,7 @@ def delegate_task(
         slot_label: Specific worktree slot label (auto-picks if omitted)
         project: Project ID (auto-detected from task if omitted)
         terminal: Open in a Terminal window (default: true). Set false for background.
+        backend: Agent backend to use (claude-code, opencode, pi). Resolves from task → project → config default.
     """
     app = _ctx(ctx)
     config = _cfg(ctx)
@@ -632,6 +641,7 @@ def delegate_task(
             max_turns=t,
             slot_label=slot_label,
             terminal=terminal,
+            backend=backend or config.default_backend,
         )
         return _agent_run_to_dict(run)
     except ValueError as e:
@@ -693,3 +703,140 @@ def get_agent_output(ctx: Context, task_id: str) -> dict:
     if len(output) > 10000:
         return {"output": output[:10000], "truncated": True, "total_length": len(output)}
     return {"output": output, "truncated": False}
+
+
+# ── Planning Tools ───────────────────────────────────────────────────────────
+
+
+@mcp.tool()
+def start_planning(ctx: Context, project_id: str, title: str = "") -> dict:
+    """Start a new CCPM-style planning session for a project.
+
+    Returns a session ID. Use plan_message to have a multi-turn brainstorm conversation,
+    then approve_prd to generate a PRD, and approve_plan to create tasks.
+    """
+    from work_orchestrator.core import planner
+
+    app = _ctx(ctx)
+    project = projects_mod.get_project(app.db, project_id)
+    if not project:
+        return {"error": f"Project not found: {project_id}"}
+    session = planner.create_session(app.db, title or f"Planning for {project_id}", project_id=project_id)
+    return _session_to_dict(session)
+
+
+@mcp.tool()
+def plan_message(ctx: Context, session_id: str, message: str) -> dict:
+    """Send a message in a planning session and get Claude's response.
+
+    Use this for brainstorming: discuss scope, ask questions, refine ideas.
+    The full conversation is preserved for PRD generation later.
+    """
+    from work_orchestrator.core import planner
+
+    app = _ctx(ctx)
+    try:
+        response = planner.plan_message(app.db, session_id, message)
+        return {"response": response}
+    except ValueError as e:
+        return {"error": str(e)}
+    except Exception as e:
+        return {"error": f"Planning API error: {e}"}
+
+
+@mcp.tool()
+def approve_prd(ctx: Context, session_id: str) -> dict:
+    """Generate a PRD from the brainstorm conversation and advance to the PRD phase.
+
+    Call this after enough brainstorming. Returns the PRD markdown.
+    """
+    from work_orchestrator.core import planner
+
+    app = _ctx(ctx)
+    try:
+        prd = planner.generate_prd(app.db, session_id)
+        session = planner.get_session(app.db, session_id)
+        return {"prd": prd, "session": _session_to_dict(session)}
+    except ValueError as e:
+        return {"error": str(e)}
+    except Exception as e:
+        return {"error": f"PRD generation error: {e}"}
+
+
+@mcp.tool()
+def decompose_plan(ctx: Context, session_id: str) -> dict:
+    """Decompose the PRD into concrete tasks (without creating them yet).
+
+    Returns a list of proposed tasks. Call approve_plan to actually create them.
+    """
+    from work_orchestrator.core import planner
+
+    app = _ctx(ctx)
+    try:
+        tasks = planner.decompose_prd(app.db, session_id)
+        return {"tasks": tasks, "count": len(tasks)}
+    except ValueError as e:
+        return {"error": str(e)}
+    except Exception as e:
+        return {"error": f"Decomposition error: {e}"}
+
+
+@mcp.tool()
+def approve_plan(ctx: Context, session_id: str, tasks: list[dict]) -> dict:
+    """Create tasks in the DB from a decomposed plan. Finalizes the planning session.
+
+    Pass the tasks array from decompose_plan. Returns the created task objects.
+    """
+    from work_orchestrator.core import planner
+
+    app = _ctx(ctx)
+    try:
+        created = planner.approve_plan(app.db, session_id, tasks)
+        return {
+            "created": [_task_to_dict(t) for t in created],
+            "count": len(created),
+        }
+    except ValueError as e:
+        return {"error": str(e)}
+
+
+@mcp.tool()
+def list_planning_sessions(ctx: Context, project_id: str | None = None) -> list[dict]:
+    """List planning sessions, optionally filtered by project."""
+    from work_orchestrator.core import planner
+
+    app = _ctx(ctx)
+    sessions = planner.list_sessions(app.db, project_id=project_id)
+    return [_session_to_dict(s) for s in sessions]
+
+
+@mcp.tool()
+def get_planning_session(ctx: Context, session_id: str) -> dict:
+    """Get full details of a planning session including conversation and PRD."""
+    from work_orchestrator.core import planner
+
+    app = _ctx(ctx)
+    session = planner.get_session(app.db, session_id)
+    if not session:
+        return {"error": f"Session not found: {session_id}"}
+    messages = planner.get_messages(app.db, session_id)
+    result = _session_to_dict(session)
+    result["messages"] = [
+        {"role": m.role, "content": m.content, "created_at": m.created_at.isoformat() if m.created_at else None}
+        for m in messages
+    ]
+    return result
+
+
+def _session_to_dict(session) -> dict:
+    d = {
+        "id": session.id,
+        "project_id": session.project_id,
+        "title": session.title,
+        "phase": session.phase,
+        "created_at": session.created_at.isoformat() if session.created_at else None,
+        "updated_at": session.updated_at.isoformat() if session.updated_at else None,
+    }
+    if session.prd_content:
+        d["has_prd"] = True
+    return d

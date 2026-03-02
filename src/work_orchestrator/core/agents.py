@@ -48,6 +48,11 @@ def _row_to_slot(row: sqlite3.Row) -> WorktreeSlot:
 
 
 def _row_to_agent_run(row: sqlite3.Row) -> AgentRun:
+    # backend column added in migration; handle older DBs gracefully
+    try:
+        backend = row["backend"]
+    except (IndexError, KeyError):
+        backend = "claude-code"
     return AgentRun(
         id=row["id"],
         task_id=row["task_id"],
@@ -57,6 +62,7 @@ def _row_to_agent_run(row: sqlite3.Row) -> AgentRun:
         instructions=row["instructions"],
         model=row["model"],
         max_budget=row["max_budget"],
+        backend=backend or "claude-code",
         output_file=row["output_file"],
         result_summary=row["result_summary"],
         exit_code=row["exit_code"],
@@ -197,11 +203,45 @@ def assign_task_to_slot(
     return get_worktree_slot(db, slot_id)
 
 
-def release_slot(db: sqlite3.Connection, slot_id: int) -> WorktreeSlot:
-    """Release a worktree slot, marking it available."""
+def release_slot(
+    db: sqlite3.Connection,
+    slot_id: int,
+    recycle: bool = False,
+    base_branch: str = "main",
+) -> WorktreeSlot:
+    """Release a worktree slot, marking it available.
+
+    If recycle=True, first marks the slot as 'draining', resets the worktree
+    to the base branch (git checkout + reset + clean), then marks it available.
+    This avoids recreating the worktree directory for the next task.
+    """
+    from work_orchestrator.core.worktrees import recycle_worktree
+
     slot = get_worktree_slot(db, slot_id)
     if not slot:
         raise ValueError(f"Slot not found: {slot_id}")
+
+    if recycle and slot.current_task_id:
+        # Mark as draining while we reset
+        db.execute(
+            """UPDATE worktree_slots
+               SET status = 'draining', updated_at = datetime('now')
+               WHERE id = ?""",
+            (slot_id,),
+        )
+        db.commit()
+
+        # Attempt to recycle the worktree (best-effort)
+        try:
+            task = get_task(db, slot.current_task_id)
+            if task and task.worktree_path:
+                # Look up the project to get repo_path
+                project = get_project(db, task.project_id)
+                if project:
+                    recycle_worktree(db, slot.current_task_id, project.repo_path, base_branch)
+        except Exception:
+            logger.warning("Failed to recycle worktree for slot %s", slot_id)
+
     db.execute(
         """UPDATE worktree_slots
            SET status = 'available', current_task_id = NULL, updated_at = datetime('now')
@@ -228,11 +268,14 @@ def delegate_task(
     slot_label: str | None = None,
     mcp_config_path: str | None = None,
     terminal: bool = False,
+    backend: str | None = None,
 ) -> AgentRun:
     """One-step delegation: auto-pick available slot, assign task, launch agent.
 
     If slot_label is provided, uses that specific slot.
     Otherwise, auto-picks the first available slot for the task's project.
+
+    Backend resolution: explicit backend arg → task.agent_backend → project.agent_backend → config default → "claude-code".
     """
     task = get_task(db, task_id)
     if not task:
@@ -249,6 +292,13 @@ def delegate_task(
         raise ValueError(
             f"Task '{task_id}' already has a running agent (PID {existing['pid']})"
         )
+
+    # Resolve backend: explicit → task → project → default
+    if not backend:
+        project = get_project(db, pid)
+        project_backend = getattr(project, "agent_backend", None) if project else None
+        task_backend = getattr(task, "agent_backend", None)
+        backend = task_backend or project_backend
 
     # Select a slot
     if slot_label:
@@ -273,7 +323,8 @@ def delegate_task(
 
     # Auto-resolve MCP config path from project repo
     if not mcp_config_path:
-        project = get_project(db, pid)
+        if not project:
+            project = get_project(db, pid)
         if project:
             candidate = Path(project.repo_path) / ".mcp.json"
             if candidate.exists():
@@ -289,6 +340,7 @@ def delegate_task(
         max_turns=max_turns,
         mcp_config_path=mcp_config_path,
         terminal=terminal,
+        backend=backend,
     )
 
 
@@ -328,6 +380,28 @@ def build_agent_prompt(
             dep = get_task(db, dep_id)
             if dep:
                 parts.append(f"- {dep.title} ({dep.id}): {dep.status}")
+
+    # Show concurrent agents working on the same project
+    try:
+        running_agents = list_agent_runs(db, status="running", project_id=task.project_id)
+        # Exclude the current task from the list
+        siblings = [r for r in running_agents if r.task_id != task_id]
+        if siblings:
+            parts.append("\n## Concurrent Work")
+            parts.append("Other agents currently working on this project:")
+            for sibling in siblings:
+                sib_task = get_task(db, sibling.task_id)
+                sib_slot = get_worktree_slot(db, sibling.worktree_slot_id) if sibling.worktree_slot_id else None
+                if sib_task:
+                    slot_info = f" → agent in {sib_slot.path} (branch: {sib_slot.branch})" if sib_slot else ""
+                    parts.append(f"- Task \"{sib_task.title}\" ({sib_task.id}){slot_info}")
+            parts.append(
+                "\nAvoid modifying files that overlap with these concurrent tasks. "
+                "If you need to touch a shared file, note it in your completion summary "
+                "so the orchestrator can handle merge conflicts."
+            )
+    except Exception:
+        pass
 
     # Pull relevant memories (best-effort)
     try:
@@ -378,12 +452,16 @@ def launch_agent(
     max_turns: int | None = None,
     mcp_config_path: str | None = None,
     terminal: bool = False,
+    backend: str | None = None,
 ) -> AgentRun:
-    """Launch a Claude CLI sub-agent for a task.
+    """Launch an agent sub-process for a task using the specified backend.
 
     The task must be assigned to a worktree slot.
     If terminal=True, opens the agent in a new Terminal window so you can watch it.
+    Backend defaults to "claude-code" if not specified.
     """
+    from work_orchestrator.backends import get_backend
+
     task = get_task(db, task_id)
     if not task:
         raise ValueError(f"Task not found: {task_id}")
@@ -409,6 +487,10 @@ def launch_agent(
             f"Task '{task_id}' already has a running agent (PID {existing['pid']})"
         )
 
+    # Resolve backend
+    backend_name = backend or "claude-code"
+    agent_backend = get_backend(backend_name)
+
     # Build the prompt
     prompt = build_agent_prompt(db, task_id, instructions)
 
@@ -418,36 +500,30 @@ def launch_agent(
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     output_file = str(out_path / f"agent-{task_id}-{timestamp}.json")
 
-    # Build command parts (shared between terminal and background modes)
-    cmd_parts = ["claude", "-p", shlex.quote(prompt)]
-    if model:
-        cmd_parts += ["--model", model]
-    if max_budget:
-        cmd_parts += ["--max-budget-usd", str(max_budget)]
-    if permission_mode:
-        cmd_parts += ["--permission-mode", permission_mode]
-    if max_turns:
-        cmd_parts += ["--max-turns", str(max_turns)]
-    if mcp_config_path:
-        cmd_parts += ["--mcp-config", shlex.quote(mcp_config_path)]
-
     if terminal:
+        # Terminal mode: build shell command string via backend
+        terminal_cmd = agent_backend.build_terminal_command(
+            prompt=prompt,
+            model=model,
+            max_turns=max_turns,
+            max_budget=max_budget,
+            permission_mode=permission_mode,
+            mcp_config_path=mcp_config_path,
+        )
         pid = _launch_in_terminal(
-            cmd_parts, slot.path, output_file, task_id, out_path, timestamp
+            terminal_cmd, slot.path, output_file, task_id, out_path, timestamp
         )
     else:
-        # Background mode: unquote args for direct Popen
-        cmd = ["claude", "-p", prompt, "--output-format", "json"]
-        if model:
-            cmd += ["--model", model]
-        if max_budget:
-            cmd += ["--max-budget-usd", str(max_budget)]
-        if permission_mode:
-            cmd += ["--permission-mode", permission_mode]
-        if max_turns:
-            cmd += ["--max-turns", str(max_turns)]
-        if mcp_config_path:
-            cmd += ["--mcp-config", mcp_config_path]
+        # Background mode: build command list via backend
+        cmd = agent_backend.build_command(
+            prompt=prompt,
+            model=model,
+            max_turns=max_turns,
+            max_budget=max_budget,
+            permission_mode=permission_mode,
+            output_format="json",
+            mcp_config_path=mcp_config_path,
+        )
 
         with open(output_file, "w") as f:
             proc = subprocess.Popen(
@@ -466,11 +542,11 @@ def launch_agent(
     # Record the agent run
     db.execute(
         """INSERT INTO agent_runs
-           (task_id, worktree_slot_id, pid, status, instructions, model, max_budget, output_file)
-           VALUES (?, ?, ?, 'running', ?, ?, ?, ?)""",
-        (task_id, slot.id, pid, instructions, model, max_budget, output_file),
+           (task_id, worktree_slot_id, pid, status, instructions, model, max_budget, backend, output_file)
+           VALUES (?, ?, ?, 'running', ?, ?, ?, ?, ?)""",
+        (task_id, slot.id, pid, instructions, model, max_budget, backend_name, output_file),
     )
-    _log_event(db, task_id, "agent_launched", None, f"PID {pid}")
+    _log_event(db, task_id, "agent_launched", None, f"PID {pid} ({backend_name})")
     db.commit()
 
     run_row = db.execute(
@@ -481,20 +557,22 @@ def launch_agent(
 
 
 def _launch_in_terminal(
-    cmd_parts: list[str],
+    agent_cmd: str,
     cwd: str,
     output_file: str,
     task_id: str,
     out_path: Path,
     timestamp: str,
 ) -> int:
-    """Launch the agent in a visible Terminal window. Returns the PID."""
+    """Launch the agent in a visible Terminal window. Returns the PID.
+
+    agent_cmd: a pre-built shell command string from the backend's build_terminal_command().
+    """
     pid_file = str(out_path / f"agent-{task_id}-{timestamp}.pid")
     script_file = str(out_path / f"agent-{task_id}-{timestamp}.sh")
 
     # Build the launcher script
     # Uses tee so output is visible in terminal AND captured to file
-    claude_cmd = " ".join(cmd_parts)
     script = (
         "#!/bin/bash\n"
         f"cd {shlex.quote(cwd)}\n"
@@ -502,7 +580,7 @@ def _launch_in_terminal(
         f"echo '=== Agent started for task: {task_id} ==='\n"
         f"echo '=== Working in: {cwd} ==='\n"
         f"echo ''\n"
-        f"{claude_cmd} 2>&1 | tee {shlex.quote(output_file)}\n"
+        f"{agent_cmd} 2>&1 | tee {shlex.quote(output_file)}\n"
         f"EXIT_CODE=${{PIPESTATUS[0]}}\n"
         f"echo ''\n"
         f"echo '=== Agent finished (exit code: '$EXIT_CODE') ==='\n"
@@ -716,30 +794,46 @@ class AgentMonitor:
         self, db: sqlite3.Connection, run: AgentRun, exit_code: int | None
     ):
         """Handle an agent that has finished running."""
+        from work_orchestrator.backends import get_backend
+
         result_summary = None
         status = "completed"
 
         if run.output_file and Path(run.output_file).exists():
             try:
-                content = Path(run.output_file).read_text()
-                if content.strip():
-                    try:
-                        data = json.loads(content)
-                        result_summary = data.get("result", content[:500])
-                        if exit_code is None:
-                            exit_code = 0
-                    except json.JSONDecodeError:
-                        result_summary = content[:500]
-                        if exit_code is None:
-                            exit_code = 1 if "error" in content.lower() else 0
+                # Use the backend's parser if available
+                backend = get_backend(run.backend)
+                parsed = backend.parse_output(run.output_file)
+                if parsed:
+                    result_summary = parsed.get("result")
+                    if exit_code is None:
+                        exit_code = parsed.get("exit_code", 0)
                 else:
                     result_summary = "(empty output)"
                     if exit_code is None:
                         exit_code = 1
-            except Exception as e:
-                result_summary = f"Error reading output: {e}"
-                if exit_code is None:
-                    exit_code = 1
+            except (KeyError, Exception) as e:
+                # Fallback if backend not found or parse fails
+                try:
+                    content = Path(run.output_file).read_text()
+                    if content.strip():
+                        try:
+                            data = json.loads(content)
+                            result_summary = data.get("result", content[:500])
+                            if exit_code is None:
+                                exit_code = 0
+                        except json.JSONDecodeError:
+                            result_summary = content[:500]
+                            if exit_code is None:
+                                exit_code = 1 if "error" in content.lower() else 0
+                    else:
+                        result_summary = "(empty output)"
+                        if exit_code is None:
+                            exit_code = 1
+                except Exception as e2:
+                    result_summary = f"Error reading output: {e2}"
+                    if exit_code is None:
+                        exit_code = 1
 
         if exit_code and exit_code != 0:
             status = "failed"

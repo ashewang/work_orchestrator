@@ -53,7 +53,8 @@ class TestDashboardPage:
         resp = web_env.get("/")
         assert resp.status_code == 200
         assert "text/html" in resp.headers["content-type"]
-        assert "Work Orchestrator" in resp.text
+        # SPA serves index.html with a root div; content rendered client-side
+        assert "root" in resp.text
 
 
 class TestProjectsAPI:

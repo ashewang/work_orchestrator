@@ -4,16 +4,21 @@ import sqlite3
 from pathlib import Path
 
 from work_orchestrator.core.tasks import get_task, _log_event
+import logging
+
 from work_orchestrator.integrations.git import (
     GitError,
     WorktreeInfo,
     branch_exists,
     delete_branch,
+    run_git,
     worktree_add,
     worktree_list,
     worktree_remove,
     get_status,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def create_worktree_for_task(
@@ -168,8 +173,13 @@ def cleanup_done_worktrees(
     db: sqlite3.Connection,
     repo_path: str | Path,
     project_id: str = "default",
+    recycle: bool = False,
 ) -> list[dict]:
-    """Remove worktrees for all completed tasks in a project."""
+    """Remove (or recycle) worktrees for all completed tasks in a project.
+
+    If recycle=True, resets the worktree branch instead of removing it,
+    leaving the slot ready for reuse without recreating the worktree.
+    """
     tasks = db.execute(
         "SELECT id FROM tasks WHERE project_id = ? AND status = 'done' AND worktree_path IS NOT NULL",
         (project_id,),
@@ -177,6 +187,60 @@ def cleanup_done_worktrees(
 
     results = []
     for row in tasks:
-        result = remove_worktree_for_task(db, row["id"], repo_path)
+        if recycle:
+            result = recycle_worktree(db, row["id"], repo_path)
+        else:
+            result = remove_worktree_for_task(db, row["id"], repo_path)
         results.append(result)
     return results
+
+
+def recycle_worktree(
+    db: sqlite3.Connection,
+    task_id: str,
+    repo_path: str | Path,
+    base_branch: str = "main",
+) -> dict:
+    """Recycle a worktree: reset it to base branch so the slot can be reused.
+
+    Instead of removing the worktree, this resets the branch to the base branch,
+    cleans untracked files, and clears the task association. The worktree directory
+    stays in place, avoiding the cost of re-creating it.
+
+    Flow: checkout base → reset --hard → clean -fd → clear task worktree_path
+    """
+    task = get_task(db, task_id)
+    if not task:
+        raise ValueError(f"Task not found: {task_id}")
+
+    if not task.worktree_path:
+        return {"task_id": task_id, "recycled": False, "reason": "No worktree assigned"}
+
+    wt_path = Path(task.worktree_path)
+    if not wt_path.exists():
+        return {"task_id": task_id, "recycled": False, "reason": "Worktree path does not exist"}
+
+    try:
+        # Reset the worktree to a clean state
+        run_git(["checkout", base_branch], cwd=wt_path)
+        run_git(["reset", "--hard", f"origin/{base_branch}"], cwd=wt_path)
+        run_git(["clean", "-fd"], cwd=wt_path)
+    except GitError:
+        # Fallback: try without origin/ prefix (local-only repos)
+        try:
+            run_git(["checkout", base_branch], cwd=wt_path)
+            run_git(["reset", "--hard", base_branch], cwd=wt_path)
+            run_git(["clean", "-fd"], cwd=wt_path)
+        except GitError as e:
+            logger.warning("Failed to recycle worktree for %s: %s", task_id, e)
+            return {"task_id": task_id, "recycled": False, "reason": str(e)}
+
+    # Clear the task's worktree association
+    db.execute(
+        "UPDATE tasks SET worktree_path = NULL, updated_at = datetime('now') WHERE id = ?",
+        (task_id,),
+    )
+    _log_event(db, task_id, "worktree_recycled", str(wt_path), None)
+    db.commit()
+
+    return {"task_id": task_id, "recycled": True, "path": str(wt_path)}

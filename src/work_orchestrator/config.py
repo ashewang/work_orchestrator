@@ -15,6 +15,7 @@ class Config:
     agent_default_model: str = "sonnet"
     agent_default_budget: float | None = None
     agent_default_max_turns: int = 25
+    default_backend: str = "claude-code"
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -42,6 +43,9 @@ class Config:
 
         if turns := os.environ.get("WO_AGENT_DEFAULT_MAX_TURNS"):
             config.agent_default_max_turns = int(turns)
+
+        if backend := os.environ.get("WO_DEFAULT_BACKEND"):
+            config.default_backend = backend
 
         return config
 

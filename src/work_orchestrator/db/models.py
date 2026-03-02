@@ -11,6 +11,7 @@ class Project:
     repo_path: str
     default_branch: str = "main"
     slack_channel: str | None = None
+    agent_backend: str | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
 
@@ -27,6 +28,7 @@ class Task:
     branch_name: str | None = None
     worktree_path: str | None = None
     pr_url: str | None = None
+    agent_backend: str | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
     completed_at: datetime | None = None
@@ -78,8 +80,29 @@ class AgentRun:
     instructions: str = ""
     model: str = "sonnet"
     max_budget: float | None = None
+    backend: str = "claude-code"
     output_file: str | None = None
     result_summary: str | None = None
     exit_code: int | None = None
     started_at: datetime | None = None
     completed_at: datetime | None = None
+
+
+@dataclass
+class PlanningSession:
+    id: str = ""
+    project_id: str = ""
+    title: str = ""
+    phase: str = "brainstorm"
+    prd_content: str | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+@dataclass
+class PlanningMessage:
+    id: int | None = None
+    session_id: str = ""
+    role: str = "user"
+    content: str = ""
+    created_at: datetime | None = None
