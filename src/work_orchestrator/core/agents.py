@@ -853,11 +853,34 @@ class AgentMonitor:
         else:
             _log_event(db, run.task_id, "agent_failed", None, result_summary)
 
-        # Release the worktree slot
+        # Auto-create PR if agent succeeded and branch has commits
+        pr_url = None
+        if status == "completed":
+            pr_url = self._try_create_pr(db, run)
+
+        # Release the worktree slot (with recycling)
         if run.worktree_slot_id:
-            release_slot(db, run.worktree_slot_id)
+            task_for_base = get_task(db, run.task_id)
+            project_for_base = get_project(db, task_for_base.project_id) if task_for_base else None
+            base = project_for_base.default_branch if project_for_base else "main"
+            release_slot(db, run.worktree_slot_id, recycle=True, base_branch=base)
 
         db.commit()
+
+        # Publish event for real-time UI updates
+        from work_orchestrator.core.events import publish
+
+        task = get_task(db, run.task_id)
+        publish("agent_completed", {
+            "task_id": run.task_id,
+            "task_title": task.title if task else run.task_id,
+            "agent_status": status,
+            "exit_code": exit_code,
+            "backend": run.backend,
+            "model": run.model,
+            "result_summary": (result_summary or "")[:200],
+            "pr_url": pr_url,
+        })
 
         # Send Slack notification (best-effort)
         self._notify_completion(db, run, status, result_summary)
@@ -866,6 +889,45 @@ class AgentMonitor:
             "Agent PID %s for task '%s' %s (exit_code=%s)",
             run.pid, run.task_id, status, exit_code,
         )
+
+    def _try_create_pr(
+        self,
+        db: sqlite3.Connection,
+        run: AgentRun,
+    ) -> str | None:
+        """Attempt to create a PR for a completed agent run. Returns PR URL or None."""
+        from work_orchestrator.integrations.git import has_commits_ahead, create_pr
+
+        task = get_task(db, run.task_id)
+        if not task or not task.worktree_path:
+            return None
+
+        wt = Path(task.worktree_path)
+        if not wt.exists():
+            return None
+
+        project = get_project(db, task.project_id)
+        base = project.default_branch if project else "main"
+
+        if not has_commits_ahead(wt, base):
+            return None
+
+        pr_url = create_pr(
+            cwd=wt,
+            title=task.title,
+            body=f"Automated PR for task `{task.id}`.\n\n{task.description or ''}",
+            base_branch=base,
+        )
+
+        if pr_url:
+            db.execute(
+                "UPDATE tasks SET pr_url = ?, updated_at = datetime('now') WHERE id = ?",
+                (pr_url, task.id),
+            )
+            _log_event(db, task.id, "pr_created", None, pr_url)
+            logger.info("Auto-created PR for task %s: %s", task.id, pr_url)
+
+        return pr_url
 
     def _notify_completion(
         self,

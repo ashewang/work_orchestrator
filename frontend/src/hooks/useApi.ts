@@ -42,17 +42,3 @@ export function useSlots(projectId: string) {
   });
 }
 
-export function usePlanSessions(projectId?: string) {
-  return useQuery({
-    queryKey: ['planSessions', projectId ?? '__all__'],
-    queryFn: () => api.getPlanSessions(projectId),
-  });
-}
-
-export function usePlanSession(sessionId: string) {
-  return useQuery({
-    queryKey: ['planSession', sessionId],
-    queryFn: () => api.getPlanSession(sessionId),
-    enabled: !!sessionId,
-  });
-}

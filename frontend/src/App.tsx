@@ -1,15 +1,15 @@
 import { BrowserRouter, Routes, Route } from 'react-router-dom';
 import Layout from './components/Layout';
 import ProjectsPage from './components/ProjectsPage';
-import ChatPage from './components/ChatPage';
+import DashboardPage from './components/DashboardPage';
 
 export default function App() {
   return (
     <BrowserRouter>
       <Routes>
         <Route element={<Layout />}>
-          <Route index element={<ProjectsPage />} />
-          <Route path="chat" element={<ChatPage />} />
+          <Route index element={<DashboardPage />} />
+          <Route path="projects" element={<ProjectsPage />} />
         </Route>
       </Routes>
     </BrowserRouter>

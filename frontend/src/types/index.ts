@@ -55,19 +55,3 @@ export interface WorktreeSlot {
   current_task_id?: string;
 }
 
-export interface PlanningSession {
-  id: string;
-  project_id: string | null;
-  title: string;
-  phase: 'brainstorm' | 'prd' | 'decompose' | 'approved' | 'cancelled';
-  created_at: string | null;
-  updated_at: string | null;
-  prd_content?: string;
-  messages?: PlanningMessage[];
-}
-
-export interface PlanningMessage {
-  role: 'user' | 'assistant' | 'system';
-  content: string;
-  created_at: string | null;
-}
