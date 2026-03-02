@@ -1,8 +1,8 @@
 import { Link, Outlet, useLocation } from 'react-router-dom';
 
 const NAV = [
-  { path: '/', label: 'Projects' },
-  { path: '/chat', label: 'Chat' },
+  { path: '/', label: 'Dashboard' },
+  { path: '/projects', label: 'Projects' },
 ];
 
 export default function Layout() {

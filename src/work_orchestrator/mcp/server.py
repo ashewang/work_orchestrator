@@ -13,6 +13,7 @@ from work_orchestrator.config import get_config
 from work_orchestrator.core import agents as agents_mod
 from work_orchestrator.core import memory as memory_mod
 from work_orchestrator.core import projects as projects_mod
+from work_orchestrator.core import specs as specs_mod
 from work_orchestrator.core import tasks as tasks_mod
 from work_orchestrator.core import worktrees as worktrees_mod
 from work_orchestrator.core.agents import AgentMonitor
@@ -424,6 +425,114 @@ def get_profile(ctx: Context) -> dict:
     app = _ctx(ctx)
     mems = memory_mod.list_memories(app.db, category="profile")
     return {m.key: m.value for m in mems}
+
+
+# ── Spec Tools ────────────────────────────────────────────────────────────────
+
+
+@mcp.tool()
+def save_spec(
+    ctx: Context,
+    project_id: str,
+    title: str,
+    content: str,
+    source_url: str | None = None,
+) -> dict:
+    """Save a spec (design doc, API spec, reference material) for a project.
+
+    If a spec with the same title already exists for the project, it will be updated.
+    """
+    app = _ctx(ctx)
+    spec = specs_mod.save_spec(app.db, project_id, title, content, source_url)
+    return _spec_to_dict(spec)
+
+
+@mcp.tool()
+def get_spec(ctx: Context, spec_id: str) -> dict:
+    """Retrieve a spec by ID, including its full content."""
+    app = _ctx(ctx)
+    spec = specs_mod.get_spec(app.db, spec_id)
+    if not spec:
+        return {"error": f"Spec '{spec_id}' not found"}
+    return _spec_to_dict(spec)
+
+
+@mcp.tool()
+def list_specs(ctx: Context, project_id: str | None = None) -> list[dict]:
+    """List specs, optionally filtered by project. Returns titles without full content."""
+    app = _ctx(ctx)
+    specs = specs_mod.list_specs(app.db, project_id)
+    return [
+        {
+            "id": s.id,
+            "project_id": s.project_id,
+            "title": s.title,
+            "source_url": s.source_url,
+            "updated_at": str(s.updated_at) if s.updated_at else None,
+        }
+        for s in specs
+    ]
+
+
+@mcp.tool()
+def update_spec(
+    ctx: Context,
+    spec_id: str,
+    title: str | None = None,
+    content: str | None = None,
+) -> dict:
+    """Update a spec's title and/or content."""
+    app = _ctx(ctx)
+    spec = specs_mod.update_spec(app.db, spec_id, title, content)
+    if not spec:
+        return {"error": f"Spec '{spec_id}' not found"}
+    return _spec_to_dict(spec)
+
+
+@mcp.tool()
+def delete_spec(ctx: Context, spec_id: str) -> dict:
+    """Delete a spec by ID."""
+    app = _ctx(ctx)
+    deleted = specs_mod.delete_spec(app.db, spec_id)
+    return {"deleted": deleted, "spec_id": spec_id}
+
+
+@mcp.tool()
+def fetch_and_save_spec(
+    ctx: Context,
+    url: str,
+    project_id: str,
+    title: str | None = None,
+) -> dict:
+    """Fetch content from a URL and save it as a spec.
+
+    Useful for storing API docs, design docs, or reference material from the web.
+    Title is auto-derived from URL if not provided.
+    """
+    import urllib.request
+
+    try:
+        with urllib.request.urlopen(url, timeout=15) as resp:
+            content = resp.read().decode("utf-8", errors="replace")
+    except Exception as e:
+        return {"error": f"Failed to fetch URL: {e}"}
+
+    spec_title = title or url.rsplit("/", 1)[-1] or url
+    app = _ctx(ctx)
+    spec = specs_mod.save_spec(app.db, project_id, spec_title, content, source_url=url)
+    return _spec_to_dict(spec)
+
+
+def _spec_to_dict(spec) -> dict:
+    return {
+        "id": spec.id,
+        "project_id": spec.project_id,
+        "title": spec.title,
+        "content": spec.content,
+        "source_url": spec.source_url,
+        "created_at": str(spec.created_at) if spec.created_at else None,
+        "updated_at": str(spec.updated_at) if spec.updated_at else None,
+    }
 
 
 # ── Project Tools ─────────────────────────────────────────────────────────────

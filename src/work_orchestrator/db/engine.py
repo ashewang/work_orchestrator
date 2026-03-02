@@ -57,6 +57,16 @@ CREATE TABLE IF NOT EXISTS memories (
     UNIQUE(key, project_id)
 );
 
+CREATE TABLE IF NOT EXISTS specs (
+    id TEXT PRIMARY KEY,
+    project_id TEXT REFERENCES projects(id),
+    title TEXT NOT NULL,
+    content TEXT NOT NULL,
+    source_url TEXT,
+    created_at TEXT DEFAULT (datetime('now')),
+    updated_at TEXT DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS worktree_slots (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     project_id TEXT NOT NULL REFERENCES projects(id),

@@ -89,6 +89,17 @@ class AgentRun:
 
 
 @dataclass
+class Spec:
+    id: str = ""
+    project_id: str | None = None
+    title: str = ""
+    content: str = ""
+    source_url: str | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+@dataclass
 class PlanningSession:
     id: str = ""
     project_id: str = ""

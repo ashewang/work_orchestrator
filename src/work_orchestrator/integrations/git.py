@@ -125,3 +125,43 @@ def get_status(cwd: str | Path) -> str:
 def get_current_branch(cwd: str | Path) -> str:
     """Get the current branch name."""
     return run_git(["branch", "--show-current"], cwd=cwd)
+
+
+def has_commits_ahead(cwd: str | Path, base_branch: str = "main") -> bool:
+    """Check if the current branch has commits ahead of base."""
+    try:
+        output = run_git(
+            ["rev-list", "--count", f"{base_branch}..HEAD"], cwd=cwd
+        )
+        return int(output) > 0
+    except (GitError, ValueError):
+        return False
+
+
+def create_pr(
+    cwd: str | Path,
+    title: str,
+    body: str = "",
+    base_branch: str = "main",
+) -> str | None:
+    """Create a GitHub PR using `gh`. Returns the PR URL or None on failure.
+
+    Pushes the branch first, then creates the PR.
+    """
+    try:
+        branch = get_current_branch(cwd)
+        run_git(["push", "-u", "origin", branch], cwd=cwd)
+    except GitError:
+        return None
+
+    try:
+        result = subprocess.run(
+            ["gh", "pr", "create", "--title", title, "--body", body, "--base", base_branch],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        return result.stdout.strip()
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return None

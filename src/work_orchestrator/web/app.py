@@ -1,17 +1,20 @@
 """Web dashboard API for the work orchestrator."""
 
+import asyncio
 import json
 from pathlib import Path
 
 import uvicorn
 from starlette.applications import Starlette
 from starlette.requests import Request
-from starlette.responses import FileResponse, JSONResponse, StreamingResponse
-from starlette.routing import Mount, Route
+from starlette.responses import FileResponse, JSONResponse
+from starlette.routing import Mount, Route, WebSocketRoute
 from starlette.staticfiles import StaticFiles
+from starlette.websockets import WebSocket
 
 from work_orchestrator.config import get_config
 from work_orchestrator.core import agents as agents_mod
+from work_orchestrator.core import events as events_mod
 from work_orchestrator.core import planner as planner_mod
 from work_orchestrator.core import projects as projects_mod
 from work_orchestrator.core import tasks as tasks_mod
@@ -241,73 +244,6 @@ async def api_plan_update(request: Request):
         db.close()
 
 
-async def api_plan_message(request: Request):
-    session_id = request.path_params["session_id"]
-    body = await request.json()
-    message = body.get("message", "")
-    if not message:
-        return JSONResponse({"error": "message is required"}, status_code=400)
-
-    db = _get_db()
-    try:
-        # SSE streaming response
-        async def event_stream():
-            for chunk in planner_mod.plan_message_stream(db, session_id, message):
-                yield f"data: {json.dumps({'text': chunk})}\n\n"
-            yield "data: [DONE]\n\n"
-
-        return StreamingResponse(event_stream(), media_type="text/event-stream")
-    except Exception as e:
-        return JSONResponse({"error": str(e)}, status_code=500)
-
-
-async def api_plan_approve_prd(request: Request):
-    session_id = request.path_params["session_id"]
-    db = _get_db()
-    try:
-        prd = planner_mod.generate_prd(db, session_id)
-        session = planner_mod.get_session(db, session_id)
-        return JSONResponse({"prd": prd, "session": _session_dict(session)})
-    except ValueError as e:
-        return JSONResponse({"error": str(e)}, status_code=400)
-    except Exception as e:
-        return JSONResponse({"error": str(e)}, status_code=500)
-    finally:
-        db.close()
-
-
-async def api_plan_decompose(request: Request):
-    session_id = request.path_params["session_id"]
-    db = _get_db()
-    try:
-        tasks = planner_mod.decompose_prd(db, session_id)
-        return JSONResponse({"tasks": tasks, "count": len(tasks)})
-    except ValueError as e:
-        return JSONResponse({"error": str(e)}, status_code=400)
-    except Exception as e:
-        return JSONResponse({"error": str(e)}, status_code=500)
-    finally:
-        db.close()
-
-
-async def api_plan_approve(request: Request):
-    session_id = request.path_params["session_id"]
-    body = await request.json()
-    tasks = body.get("tasks", [])
-    project_id = body.get("project_id")
-    db = _get_db()
-    try:
-        created = planner_mod.approve_plan(db, session_id, tasks, project_id=project_id)
-        return JSONResponse({
-            "created": [_task_dict(t) for t in created],
-            "count": len(created),
-        })
-    except ValueError as e:
-        return JSONResponse({"error": str(e)}, status_code=400)
-    finally:
-        db.close()
-
-
 async def api_plan_sessions(request: Request):
     project_id = request.query_params.get("project_id")
     db = _get_db()
@@ -408,6 +344,31 @@ def _slot_dict(s) -> dict:
     return d
 
 
+# ── WebSocket ────────────────────────────────────────────────────────────
+
+
+async def ws_events(websocket: WebSocket):
+    """WebSocket endpoint for real-time event streaming to the dashboard."""
+    await websocket.accept()
+    queue: asyncio.Queue[str] = asyncio.Queue()
+
+    def on_event(event_type: str, payload: dict):
+        try:
+            queue.put_nowait(events_mod.to_json(event_type, payload))
+        except asyncio.QueueFull:
+            pass
+
+    unsub = events_mod.subscribe(on_event)
+    try:
+        while True:
+            msg = await queue.get()
+            await websocket.send_text(msg)
+    except Exception:
+        pass
+    finally:
+        unsub()
+
+
 # ── SPA catch-all ────────────────────────────────────────────────────────────
 
 
@@ -435,18 +396,16 @@ def create_app() -> Starlette:
         Route("/api/tasks/{task_id}", api_get_task),
         Route("/api/tasks/{task_id}/dispatch", api_dispatch_task, methods=["POST"]),
         Route("/api/worktrees", api_list_worktrees),
-        # Planning
+        # Planning (session CRUD — used by MCP tools)
         Route("/api/plan/start", api_plan_start, methods=["POST"]),
         Route("/api/plan/{session_id}/update", api_plan_update, methods=["PATCH", "POST"]),
-        Route("/api/plan/{session_id}/message", api_plan_message, methods=["POST"]),
-        Route("/api/plan/{session_id}/approve-prd", api_plan_approve_prd, methods=["POST"]),
-        Route("/api/plan/{session_id}/decompose", api_plan_decompose, methods=["POST"]),
-        Route("/api/plan/{session_id}/approve", api_plan_approve, methods=["POST"]),
         Route("/api/plan/sessions", api_plan_sessions),
         Route("/api/plan/{session_id}", api_plan_detail),
         # Agents
         Route("/api/agents", api_list_agents),
         Route("/api/projects/{project_id}/slots", api_list_slots),
+        # WebSocket for real-time events
+        WebSocketRoute("/ws", ws_events),
     ]
 
     # Serve built frontend static files if available
