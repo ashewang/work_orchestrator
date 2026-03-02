@@ -12,6 +12,7 @@ from work_orchestrator.core import agents as agents_mod
 from work_orchestrator.core import projects as projects_mod
 from work_orchestrator.core import tasks as tasks_mod
 from work_orchestrator.db.engine import init_db
+from work_orchestrator.db.models import AgentRun
 
 
 @pytest.fixture
@@ -176,6 +177,7 @@ class TestAgentLaunch:
             db, task.id, "Do the thing",
             output_dir=str(Path(tmp) / "outputs"),
             model="sonnet",
+            terminal=False,
         )
         assert run.pid == 12345
         assert run.status == "running"
@@ -196,6 +198,7 @@ class TestAgentLaunch:
             agents_mod.launch_agent(
                 db, task.id, "instructions",
                 output_dir=str(Path(tmp) / "outputs"),
+                terminal=False,
             )
 
     @patch("work_orchestrator.core.agents.subprocess.Popen")
@@ -213,11 +216,13 @@ class TestAgentLaunch:
         agents_mod.launch_agent(
             db, task.id, "First",
             output_dir=str(Path(tmp) / "outputs"),
+            terminal=False,
         )
         with pytest.raises(ValueError, match="already has a running agent"):
             agents_mod.launch_agent(
                 db, task.id, "Second",
                 output_dir=str(Path(tmp) / "outputs"),
+                terminal=False,
             )
 
 
@@ -237,6 +242,7 @@ class TestAgentCancel:
         agents_mod.launch_agent(
             db, task.id, "Work on this",
             output_dir=str(Path(tmp) / "outputs"),
+            terminal=False,
         )
 
         with patch("os.kill") as mock_kill:
@@ -269,6 +275,7 @@ class TestAgentQueries:
         agents_mod.launch_agent(
             db, task.id, "Do stuff",
             output_dir=str(Path(tmp) / "outputs"),
+            terminal=False,
         )
 
         run = agents_mod.get_latest_agent_run(db, task.id)
@@ -290,6 +297,7 @@ class TestAgentQueries:
         agents_mod.launch_agent(
             db, task.id, "Work",
             output_dir=str(Path(tmp) / "outputs"),
+            terminal=False,
         )
 
         runs = agents_mod.list_agent_runs(db, status="running")
@@ -305,82 +313,82 @@ class TestAgentQueries:
 
 
 class TestDelegateTask:
-    @patch("work_orchestrator.core.agents.subprocess.Popen")
-    def test_delegate_auto_picks_slot(self, mock_popen, db_with_slots, git_repo):
+    def test_delegate_creates_worktree_and_launches(self, db_with_slots, git_repo):
         _, tmp = git_repo
         db = db_with_slots
         task = tasks_mod.create_task(db, "Delegate test", "test")
 
-        mock_proc = MagicMock()
-        mock_proc.pid = 44444
-        mock_popen.return_value = mock_proc
-
-        run = agents_mod.delegate_task(
-            db, task.id, "Do the work",
-            output_dir=str(Path(tmp) / "outputs"),
-            model="sonnet",
-            max_turns=10,
-        )
+        fake_run = AgentRun(id=99, task_id=task.id, status="running", pid=44444)
+        with patch("work_orchestrator.core.agents.launch_agent", return_value=fake_run):
+            run = agents_mod.delegate_task(
+                db, task.id, "Do the work",
+                output_dir=str(Path(tmp) / "outputs"),
+                model="sonnet",
+                max_turns=10,
+            )
         assert run.pid == 44444
         assert run.status == "running"
 
-        # Task should be assigned to a slot and in-progress
+        # Task should have a worktree and a slot assigned
         updated_task = tasks_mod.get_task(db, task.id)
-        assert updated_task.status == "in-progress"
         assert updated_task.worktree_path is not None
 
-    @patch("work_orchestrator.core.agents.subprocess.Popen")
-    def test_delegate_specific_slot(self, mock_popen, db_with_slots, git_repo):
+    def test_delegate_specific_slot(self, db_with_slots, git_repo):
         _, tmp = git_repo
         db = db_with_slots
         task = tasks_mod.create_task(db, "Specific slot", "test")
 
-        mock_proc = MagicMock()
-        mock_proc.pid = 33333
-        mock_popen.return_value = mock_proc
-
-        run = agents_mod.delegate_task(
-            db, task.id, "Work on alpha",
-            output_dir=str(Path(tmp) / "outputs"),
-            slot_label="wt-alpha",
-        )
+        fake_run = AgentRun(id=99, task_id=task.id, status="running", pid=33333)
+        with patch("work_orchestrator.core.agents.launch_agent", return_value=fake_run):
+            run = agents_mod.delegate_task(
+                db, task.id, "Work on alpha",
+                output_dir=str(Path(tmp) / "outputs"),
+                slot_label="wt-alpha",
+            )
         assert run.pid == 33333
 
         slot = agents_mod.get_slot_by_label(db, "test", "wt-alpha")
         assert slot.status == "occupied"
         assert slot.current_task_id == task.id
 
-    def test_delegate_no_slots_available(self, db_with_slots, git_repo):
-        _, tmp = git_repo
+    def test_delegate_always_creates_new_worktree(self, db_with_slots, git_repo):
+        repo_path, tmp = git_repo
         db = db_with_slots
-        # Occupy all slots
-        slots = agents_mod.list_worktree_slots(db, "test")
-        for i, slot in enumerate(slots):
-            t = tasks_mod.create_task(db, f"Filler {i}", "test")
-            agents_mod.assign_task_to_slot(db, t.id, slot.id)
+        original_slots = agents_mod.list_worktree_slots(db, "test")
 
-        # Now try to delegate a new task
-        task = tasks_mod.create_task(db, "No slots left", "test")
-        with pytest.raises(ValueError, match="No available worktree slots"):
-            agents_mod.delegate_task(
+        # Mock launch_agent to avoid subprocess spawn while allowing git operations
+        fake_run = AgentRun(id=99, task_id="", status="running", pid=33333)
+        with patch("work_orchestrator.core.agents.launch_agent", return_value=fake_run) as mock_launch:
+            task = tasks_mod.create_task(db, "Fresh worktree", "test")
+            run = agents_mod.delegate_task(
                 db, task.id, "Do something",
                 output_dir=str(Path(tmp) / "outputs"),
             )
+            assert run.status == "running"
+            mock_launch.assert_called_once()
+        # Verify a new worktree slot was created (not reusing existing ones)
+        all_slots = agents_mod.list_worktree_slots(db, "test")
+        new_slot = [s for s in all_slots if s.label == f"task-{task.id}"]
+        assert len(new_slot) == 1
+        assert new_slot[0].status == "occupied"
 
-    @patch("work_orchestrator.core.agents.subprocess.Popen")
-    def test_delegate_already_running_fails(self, mock_popen, db_with_slots, git_repo):
+    def test_delegate_already_running_fails(self, db_with_slots, git_repo):
         _, tmp = git_repo
         db = db_with_slots
         task = tasks_mod.create_task(db, "Double delegate", "test")
 
-        mock_proc = MagicMock()
-        mock_proc.pid = 22222
-        mock_popen.return_value = mock_proc
-
-        agents_mod.delegate_task(
-            db, task.id, "First run",
-            output_dir=str(Path(tmp) / "outputs"),
+        fake_run = AgentRun(id=99, task_id=task.id, status="running", pid=22222)
+        with patch("work_orchestrator.core.agents.launch_agent", return_value=fake_run):
+            agents_mod.delegate_task(
+                db, task.id, "First run",
+                output_dir=str(Path(tmp) / "outputs"),
+            )
+        # Simulate what launch_agent would have inserted
+        db.execute(
+            "INSERT INTO agent_runs (task_id, pid, status, instructions) VALUES (?, ?, 'running', ?)",
+            (task.id, 22222, "First run"),
         )
+        db.commit()
         with pytest.raises(ValueError, match="already has a running agent"):
             agents_mod.delegate_task(
                 db, task.id, "Second run",
@@ -416,6 +424,7 @@ class TestLaunchWithMaxTurns:
             model="sonnet",
             max_turns=30,
             mcp_config_path="/path/to/.mcp.json",
+            terminal=False,
         )
         assert run.pid == 88888
 
