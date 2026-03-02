@@ -35,6 +35,7 @@ class PiAgentBackend:
         max_budget: float | None = None,
         permission_mode: str | None = None,
         mcp_config_path: str | None = None,
+        prompt_file: str | None = None,
     ) -> str:
         parts = ["pi", "-p", shlex.quote(prompt), "--no-session"]
         if model:

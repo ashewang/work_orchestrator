@@ -20,28 +20,31 @@ Always use `uv run` to execute Python commands in this project. Never use bare `
 
 ## Agent Delegation
 
-When the user asks you to delegate work to subagents, use the `delegate_task` MCP tool. This combines slot assignment and agent launch into one step.
+When the user asks you to delegate work to subagents, use the `delegate_task` MCP tool. It auto-creates a git worktree and launches an agent in a separate Terminal window.
+
+### IMPORTANT: Do NOT explore the target repo before delegating.
+
+The subagent gets the project's CLAUDE.md context and has full access to the codebase in its worktree. It can explore the repo itself. Your job is to write clear instructions and call `delegate_task` immediately. Do not use Explore, Grep, Read, or any other tool to look at the target project's code before delegating.
 
 ### Delegation workflow:
-1. Ensure worktree slots are registered: call `register_worktrees` for the project
-2. Identify ready tasks: call `get_ready_tasks` for the project
-3. For each task to delegate: call `delegate_task` with:
+1. Call `delegate_task` with:
    - `task_id`: the task to work on
-   - `instructions`: detailed, specific instructions for the subagent (include acceptance criteria)
-   - `max_turns`: 25 for typical tasks, 50+ for complex multi-file changes
+   - `instructions`: detailed instructions describing what to build/fix and acceptance criteria
+   - `max_turns`: 50 for typical tasks, 100 for complex multi-file changes
    - `model`: "sonnet" for most tasks, "opus" for architecture/complex reasoning
-4. Monitor progress: call `agent_status` or `list_agents` to check
+2. The subagent opens in a new Terminal window — it does NOT block this conversation
+3. Monitor progress: call `agent_status` or `list_agents` to check
 
 ### Writing good agent instructions:
-- Be specific about what files to change and what the expected behavior is
-- Include acceptance criteria (tests to pass, behavior to verify)
-- Mention the branch they are on and any relevant context
+- Describe WHAT to build and the acceptance criteria
+- Do NOT pre-research the codebase to figure out HOW — let the subagent do that
+- Include any user-provided context or requirements verbatim
 - Do NOT include instructions to update task status — the agent prompt handles this automatically
 
 ### Checking results:
 - `agent_status` shows if agents are running/completed/failed
 - `get_agent_output` shows the captured output after completion
-- Completed agents automatically move tasks to "review" status
+- Completed agents automatically create a PR and store the URL on the task
 
 ## Web Dashboard
 

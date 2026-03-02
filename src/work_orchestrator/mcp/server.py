@@ -214,9 +214,10 @@ def create_worktree(
     if not task:
         return {"error": f"Task not found: {task_id}"}
     project = projects_mod.get_project(app.db, task.project_id)
-    repo = project.repo_path if project else str(config.repo_path)
+    if not project:
+        return {"error": f"Project not found for task '{task_id}' — cannot determine repo path"}
     return worktrees_mod.create_worktree_for_task(
-        app.db, task_id, repo, config.worktree_dir, base_branch, branch_name
+        app.db, task_id, project.repo_path, base_branch=base_branch, branch_name=branch_name
     )
 
 
@@ -543,16 +544,22 @@ def init_project(
     ctx: Context,
     project_id: str,
     name: str,
-    repo_path: str | None = None,
+    repo_path: str,
     default_branch: str = "main",
     slack_channel: str | None = None,
 ) -> dict:
-    """Initialize a new project."""
+    """Initialize a new project.
+
+    Args:
+        project_id: Unique slug for the project (e.g. "cowrite-lyrics")
+        name: Human-readable project name
+        repo_path: Absolute path to the project's git repository (REQUIRED)
+        default_branch: Base branch name (default: "main")
+        slack_channel: Optional Slack channel for notifications
+    """
     app = _ctx(ctx)
-    config = _cfg(ctx)
-    path = repo_path or str(config.repo_path)
     project = projects_mod.create_project(
-        app.db, project_id, name, path, default_branch, slack_channel
+        app.db, project_id, name, repo_path, default_branch, slack_channel
     )
     return {
         "id": project.id,
@@ -561,6 +568,23 @@ def init_project(
         "default_branch": project.default_branch,
         "slack_channel": project.slack_channel,
     }
+
+
+@mcp.tool()
+def get_project_context(ctx: Context, project_id: str = "default") -> dict:
+    """Read the .claude context (CLAUDE.md, user preferences) for a project.
+
+    Returns project guidelines, user project notes, and global user preferences
+    from the project's repo directory. This is the same context that sub-agents
+    receive when delegated.
+    """
+    from work_orchestrator.core.project_context import read_project_context
+
+    app = _ctx(ctx)
+    project = projects_mod.get_project(app.db, project_id)
+    if not project:
+        return {"error": f"Project '{project_id}' not found"}
+    return read_project_context(project.repo_path)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -716,11 +740,12 @@ def delegate_task(
 ) -> dict:
     """Delegate a task to a sub-agent in one step.
 
-    Automatically picks an available worktree slot (or use slot_label to pick one),
-    assigns the task, and launches an agent with MCP access to work-orchestrator tools.
+    Creates a fresh git worktree for the task and launches an agent with full
+    repo access and MCP tools. The sub-agent gets the project's CLAUDE.md context
+    and can explore the codebase itself — do NOT pre-explore the repo before calling this.
 
-    By default, opens the agent in a new Terminal window so you can watch it work.
-    Use agent_status to check progress, or wait for completion notification.
+    Just provide clear instructions describing what to build/fix, and delegate immediately.
+    The sub-agent opens in a new Terminal window so it doesn't block the conversation.
 
     Args:
         task_id: The task to delegate
@@ -728,7 +753,7 @@ def delegate_task(
         model: Model to use (default: config default, usually "sonnet")
         max_budget: Max spend in USD (default: config default)
         max_turns: Max tool-use turns (default: 25). Higher for complex tasks.
-        slot_label: Specific worktree slot label (auto-picks if omitted)
+        slot_label: Specific worktree slot label (auto-creates if omitted)
         project: Project ID (auto-detected from task if omitted)
         terminal: Open in a Terminal window (default: true). Set false for background.
         backend: Agent backend to use (claude-code, opencode, pi). Resolves from task → project → config default.

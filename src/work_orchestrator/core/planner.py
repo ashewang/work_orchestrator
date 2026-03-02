@@ -190,6 +190,14 @@ def _build_brainstorm_system(
             parts.append(f"Default branch: {project.default_branch}")
             parts.append("")
 
+            # Read project guidelines from .claude
+            from work_orchestrator.core.project_context import read_project_context
+
+            pctx = read_project_context(project.repo_path)
+            if pctx["project_guidelines"]:
+                parts.append(f"## Project Guidelines (from CLAUDE.md)\n{pctx['project_guidelines']}")
+                parts.append("")
+
         if existing_tasks:
             parts.append("## Existing Tasks")
             for t in existing_tasks[:20]:

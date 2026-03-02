@@ -27,7 +27,9 @@ class ClaudeCodeBackend:
             cmd += ["--model", model]
         if max_budget:
             cmd += ["--max-budget-usd", str(max_budget)]
-        if permission_mode:
+        if permission_mode == "dangerouslySkipPermissions":
+            cmd += ["--dangerously-skip-permissions"]
+        elif permission_mode:
             cmd += ["--permission-mode", permission_mode]
         if max_turns:
             cmd += ["--max-turns", str(max_turns)]
@@ -43,13 +45,25 @@ class ClaudeCodeBackend:
         max_budget: float | None = None,
         permission_mode: str | None = None,
         mcp_config_path: str | None = None,
+        prompt_file: str | None = None,
     ) -> str:
-        parts = ["claude", "-p", shlex.quote(prompt)]
+        """Build a shell command string for terminal execution.
+
+        If prompt_file is provided, the prompt is written to that file and piped
+        into claude via stdin, avoiding shell escaping issues with large prompts.
+        """
+        if prompt_file:
+            Path(prompt_file).write_text(prompt)
+            parts = ["cat", shlex.quote(prompt_file), "|", "claude", "-p", "-"]
+        else:
+            parts = ["claude", "-p", shlex.quote(prompt)]
         if model:
             parts += ["--model", model]
         if max_budget:
             parts += ["--max-budget-usd", str(max_budget)]
-        if permission_mode:
+        if permission_mode == "dangerouslySkipPermissions":
+            parts += ["--dangerously-skip-permissions"]
+        elif permission_mode:
             parts += ["--permission-mode", permission_mode]
         if max_turns:
             parts += ["--max-turns", str(max_turns)]

@@ -12,9 +12,9 @@ class Config:
     slack_bot_token: str | None = None
     worktree_dir: str = ".worktrees"
     agent_output_dir: str = ".agent_outputs"
-    agent_default_model: str = "sonnet"
+    agent_default_model: str = "opus"
     agent_default_budget: float | None = None
-    agent_default_max_turns: int = 25
+    agent_default_max_turns: int = 100
     default_backend: str = "claude-code"
 
     @classmethod

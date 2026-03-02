@@ -264,10 +264,10 @@ def delegate_task(
     model: str = "sonnet",
     max_budget: float | None = None,
     max_turns: int = 25,
-    permission_mode: str = "bypassPermissions",
+    permission_mode: str = "dangerouslySkipPermissions",
     slot_label: str | None = None,
     mcp_config_path: str | None = None,
-    terminal: bool = False,
+    terminal: bool = True,
     backend: str | None = None,
 ) -> AgentRun:
     """One-step delegation: auto-pick available slot, assign task, launch agent.
@@ -293,9 +293,11 @@ def delegate_task(
             f"Task '{task_id}' already has a running agent (PID {existing['pid']})"
         )
 
+    # Resolve project early (needed for backend, slots, and MCP config)
+    project = get_project(db, pid)
+
     # Resolve backend: explicit → task → project → default
     if not backend:
-        project = get_project(db, pid)
         project_backend = getattr(project, "agent_backend", None) if project else None
         task_backend = getattr(task, "agent_backend", None)
         backend = task_backend or project_backend
@@ -310,22 +312,22 @@ def delegate_task(
                 f"Slot '{slot_label}' is already occupied by task {slot.current_task_id}"
             )
     else:
-        available = list_worktree_slots(db, pid, status="available")
-        if not available:
-            raise ValueError(
-                f"No available worktree slots for project '{pid}'. "
-                "Register worktrees first with register_worktrees or 'wo agent register'."
-            )
-        slot = available[0]
+        # Always create a fresh worktree for each task delegation
+        if not project:
+            raise ValueError(f"Project '{pid}' not found, cannot auto-create worktree")
+        from work_orchestrator.core.worktrees import create_worktree_for_task
+        wt = create_worktree_for_task(
+            db, task_id, project.repo_path, base_branch=project.default_branch
+        )
+        slot = register_worktree_slot(
+            db, pid, wt["worktree_path"], f"task-{task_id}", wt["branch"]
+        )
 
     # Assign the task to the slot
     assign_task_to_slot(db, task_id, slot.id)
 
     # Auto-resolve MCP config path from project repo
-    if not mcp_config_path:
-        if not project:
-            project = get_project(db, pid)
-        if project:
+    if not mcp_config_path and project:
             candidate = Path(project.repo_path) / ".mcp.json"
             if candidate.exists():
                 mcp_config_path = str(candidate)
@@ -370,6 +372,16 @@ def build_agent_prompt(
         parts.append(f"Project: {project.name} ({project.id})")
         parts.append(f"Repository: {project.repo_path}")
         parts.append(f"Default branch: {project.default_branch}")
+
+    # Read project guidelines from .claude
+    if project:
+        from work_orchestrator.core.project_context import read_project_context
+
+        pctx = read_project_context(project.repo_path)
+        if pctx["project_guidelines"]:
+            parts.append(f"\n## Project Guidelines (from CLAUDE.md)\n{pctx['project_guidelines']}")
+        if pctx["user_global_prefs"]:
+            parts.append(f"\n## User Preferences\n{pctx['user_global_prefs']}")
 
     if task.branch_name:
         parts.append(f"Working branch: {task.branch_name}")
@@ -429,10 +441,11 @@ def build_agent_prompt(
 
     parts.append(
         "\n## Completion\n"
-        "When you are finished, provide a brief summary of what was accomplished, "
-        "any files changed, and any issues encountered. "
-        "If you created commits, list them. "
-        "If you opened a PR, include the URL."
+        "When you are finished:\n"
+        "1. Commit all changes with a clear commit message\n"
+        "2. Push the branch and create a PR with `gh pr create`\n"
+        "3. Call `update_task_pr_url` with the PR URL\n"
+        "4. Provide a brief summary of what was accomplished, files changed, and any issues"
     )
 
     return "\n".join(parts)
@@ -451,13 +464,13 @@ def launch_agent(
     permission_mode: str = "acceptEdits",
     max_turns: int | None = None,
     mcp_config_path: str | None = None,
-    terminal: bool = False,
+    terminal: bool = True,
     backend: str | None = None,
 ) -> AgentRun:
     """Launch an agent sub-process for a task using the specified backend.
 
     The task must be assigned to a worktree slot.
-    If terminal=True, opens the agent in a new Terminal window so you can watch it.
+    If terminal=True (default), opens the agent in a new Terminal window so you can watch it.
     Backend defaults to "claude-code" if not specified.
     """
     from work_orchestrator.backends import get_backend
@@ -494,14 +507,16 @@ def launch_agent(
     # Build the prompt
     prompt = build_agent_prompt(db, task_id, instructions)
 
-    # Prepare output file
-    out_path = Path(output_dir)
+    # Prepare output file (use absolute paths so they work after cd to worktree)
+    out_path = Path(output_dir).resolve()
     out_path.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     output_file = str(out_path / f"agent-{task_id}-{timestamp}.json")
 
     if terminal:
         # Terminal mode: build shell command string via backend
+        # Write prompt to file to avoid shell escaping issues with large prompts
+        prompt_file = str(out_path / f"agent-{task_id}-{timestamp}.prompt.md")
         terminal_cmd = agent_backend.build_terminal_command(
             prompt=prompt,
             model=model,
@@ -509,6 +524,7 @@ def launch_agent(
             max_budget=max_budget,
             permission_mode=permission_mode,
             mcp_config_path=mcp_config_path,
+            prompt_file=prompt_file,
         )
         pid = _launch_in_terminal(
             terminal_cmd, slot.path, output_file, task_id, out_path, timestamp
@@ -591,8 +607,14 @@ def _launch_in_terminal(
     Path(script_file).write_text(script)
     Path(script_file).chmod(0o755)
 
-    # Open in Terminal.app
-    subprocess.Popen(["open", "-a", "Terminal", script_file])
+    # Open in Terminal.app via AppleScript (more reliable than `open -a Terminal`)
+    applescript = (
+        'tell application "Terminal"\n'
+        "    activate\n"
+        f'    do script {shlex.quote(script_file)}\n'
+        "end tell\n"
+    )
+    subprocess.Popen(["osascript", "-e", applescript])
 
     # Wait for the PID file to appear (the script writes it on startup)
     for _ in range(50):
